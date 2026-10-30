@@ -42,11 +42,29 @@ if (!token || token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
 }
 
 // Start Telegram Bot in Polling Mode
-const bot = new TelegramBot(token, { polling: true });
+const bot = new TelegramBot(token, {
+  polling: {
+    interval: 300,
+    autoStart: true,
+    params: {
+      timeout: 10,
+    },
+  },
+});
 console.log('🚀 Boost & Sales Tracker Telegram Bot is RUNNING!');
+
+// Handle polling errors and reconnection cleanly
+bot.on('polling_error', (err) => {
+  console.log('[Telegram Polling notice]:', err.code || err.message);
+});
+
+bot.on('error', (err) => {
+  console.log('[Telegram Bot Error]:', err.message);
+});
 
 // Lightweight HTTP server for Cloud Hosting Health Checks (Render / Railway / Koyeb)
 const http = require('http');
+const https = require('https');
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -54,6 +72,14 @@ http.createServer((req, res) => {
 }).listen(PORT, () => {
   console.log(`🌐 Cloud Health Check Server is running on port ${PORT}`);
 });
+
+// Self-sustaining Keep-Alive ping to prevent Cloud Render from sleeping
+const CLOUD_URL = 'https://boost-sales-tracker-bot.onrender.com';
+setInterval(() => {
+  https.get(CLOUD_URL, (res) => {
+    // Keep alive ping sent
+  }).on('error', () => {});
+}, 8 * 60 * 1000); // Ping every 8 minutes
 
 // Cache sellers in memory & sync with Firestore
 let cachedSellers = [];
@@ -66,9 +92,13 @@ async function loadSellersFromDb() {
       if (Array.isArray(data.names)) {
         cachedSellers = data.names.map((item) => {
           if (typeof item === 'object' && item !== null) {
-            return { name: item.name, role: item.role || 'seller' };
+            return {
+              name: item.name,
+              role: item.role || 'seller',
+              salary: typeof item.salary === 'number' ? item.salary : (item.role === 'staff' ? 250 : 0),
+            };
           }
-          return { name: String(item), role: 'seller' };
+          return { name: String(item), role: 'seller', salary: 0 };
         });
       }
     }
@@ -158,7 +188,7 @@ async function resolveSeller(rawInputName) {
 
   // 4. Not matched: add to metadata/sellers as a new seller
   try {
-    const newSeller = { name: trimmed, role: 'seller' };
+    const newSeller = { name: trimmed, role: 'seller', salary: 0 };
     const updatedList = [...cachedSellers, newSeller];
     await setDoc(doc(db, 'metadata', 'sellers'), { names: updatedList }, { merge: true });
     cachedSellers = updatedList;
@@ -180,8 +210,56 @@ async function getNextOrderNumber() {
   }
 }
 
-// COMMAND: /start or /help
-bot.onText(/\/(start|help)/, (msg) => {
+/**
+ * Deduplication Check based on user requirements:
+ * 1. Customer Phone (លេខទូរស័ព្ទភ្ញៀវ)
+ * 2. Location (ទីតាំង / ខេត្ត)
+ * 3. Date (កាលបរិច្ឆេទ)
+ */
+async function checkDuplicateOrder({ customerPhone, destination, provinceId, date }) {
+  if (!customerPhone || !date) return null;
+  try {
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    const q = query(collection(db, 'orders'), where('date', '==', date));
+    const snap = await getDocs(q);
+    if (snap.empty) return null;
+
+    const normNewDest = (destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
+
+    for (const docSnap of snap.docs) {
+      const existing = docSnap.data();
+      const existPhone = (existing.customerPhone || '').replace(/\D/g, '');
+
+      // Check Criteria 1: Customer Phone
+      const phoneMatches = existPhone && cleanPhone && (
+        existPhone === cleanPhone ||
+        existPhone.endsWith(cleanPhone) ||
+        cleanPhone.endsWith(existPhone)
+      );
+
+      if (phoneMatches) {
+        // Check Criteria 2: Location (Province match OR destination text similarity)
+        const provMatch = existing.provinceId && provinceId && existing.provinceId === provinceId;
+        const normExistDest = (existing.destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
+        const destMatch = normNewDest && normExistDest && (
+          normNewDest.includes(normExistDest) ||
+          normExistDest.includes(normNewDest)
+        );
+
+        if (provMatch || destMatch) {
+          // All 3 criteria match: Same Phone, Same Location, Same Date!
+          return { id: docSnap.id, ...existing };
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error checking duplicate order:', err.message);
+  }
+  return null;
+}
+
+// COMMAND: /start or /help (supports /start@bot_username in groups)
+bot.onText(/\/(start|help)(@\w+)?/i, (msg) => {
   const chatId = msg.chat.id;
   const helpText = `👋 ជំរាបសួរ! ខ្ញុំជា Bot សម្រាប់កត់ត្រាទិន្នន័យលក់ចូលក្នុង App "Boost & Sales Tracker"។
 
@@ -213,7 +291,7 @@ bot.onText(/\/(start|help)/, (msg) => {
 });
 
 // COMMAND: /sellers
-bot.onText(/\/sellers/, async (msg) => {
+bot.onText(/\/sellers(@\w+)?/i, async (msg) => {
   const chatId = msg.chat.id;
   await loadSellersFromDb();
   if (cachedSellers.length === 0) {
@@ -229,7 +307,7 @@ bot.onText(/\/sellers/, async (msg) => {
 });
 
 // COMMAND: /today
-bot.onText(/\/today/, async (msg) => {
+bot.onText(/\/today(@\w+)?/i, async (msg) => {
   const chatId = msg.chat.id;
   const today = getKhmerToday();
   try {
@@ -284,6 +362,31 @@ bot.on('message', async (msg) => {
         '⚠️ រកមិនឃើញលេខទូរស័ព្ទភ្ញៀវ ឬទិន្នន័យមិនត្រឹមត្រូវ។ សូមពិនិត្យទម្រង់សារឡើងវិញ!',
         { reply_to_message_id: msg.message_id }
       );
+    }
+
+    // Deduplication Check (1. Phone, 2. Location, 3. Date)
+    const duplicate = await checkDuplicateOrder({
+      customerPhone: parsed.customerPhone,
+      destination: parsed.destination,
+      provinceId: parsed.provinceId,
+      date: parsed.date,
+    });
+
+    if (duplicate) {
+      const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${duplicate.customerPhone}
+📍 ទីតាំង: ${duplicate.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${duplicate.date}
+🔖 លេខកុម្ម៉ង់ដែលមានស្រាប់: #${duplicate.orderNumber || ''}
+👨‍💼 អ្នកលក់: ${duplicate.sellerName || 'N/A'}
+🛍️ ឈុត: ${duplicate.packageId ? (duplicate.tubes + ' ទីប ($' + duplicate.price + ')') : 'ឈុតទំនិញ'}
+-----------------------------------------
+👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនចូលក្នុង App ឡើងវិញឡើយ!`;
+
+      return bot.sendMessage(chatId, dupMsg, {
+        reply_to_message_id: msg.message_id,
+      });
     }
 
     // Always fetch fresh sellers list from Firestore (including newly added sellers from the App!)
@@ -419,6 +522,24 @@ bot.on('callback_query', async (queryMsg) => {
     pendingOrders.delete(pendingId);
 
     try {
+      // Re-verify duplicate check right before saving
+      const duplicate = await checkDuplicateOrder({
+        customerPhone: pending.parsed.customerPhone,
+        destination: pending.parsed.destination,
+        provinceId: pending.parsed.provinceId,
+        date: pending.parsed.date,
+      });
+
+      if (duplicate) {
+        return bot.editMessageText(
+          `⚠️ ការកុម្ម៉ង់នេះត្រូវបានកត់ត្រារួចហើយ (#${duplicate.orderNumber || ''}) ដោយ ${duplicate.sellerName}! Bot មិនកត់ត្រាស្ទួនឡើយ។`,
+          {
+            chat_id: chatId,
+            message_id: messageId,
+          }
+        );
+      }
+
       const orderNumber = await getNextOrderNumber();
       const completeOrder = buildCompleteOrder({
         parsed: {
