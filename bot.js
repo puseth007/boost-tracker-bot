@@ -316,18 +316,33 @@ bot.onText(/\/today(@\w+)?/i, async (msg) => {
     let totalRevenue = 0;
     let totalProfit = 0;
     let totalTubes = 0;
+    let paidCount = 0;
+    let paidAmount = 0;
+    let unpaidCount = 0;
+    let unpaidAmount = 0;
 
     snap.forEach((d) => {
       const data = d.data();
-      totalRevenue += Number(data.price || 0);
+      const price = Number(data.price || 0);
+      totalRevenue += price;
       totalProfit += Number(data.orderProfit || 0);
       totalTubes += Number(data.tubes || 0);
+
+      if (data.paymentStatus === 'paid') {
+        paidCount += 1;
+        paidAmount += price;
+      } else {
+        unpaidCount += 1;
+        unpaidAmount += price;
+      }
     });
 
     const msgText = `📊 របាយការណ៍លក់ថ្ងៃនេះ (${today})៖
 ----------------------------------
 📦 ចំនួនកុម្ម៉ង់សរុប: ${snap.size} កុម្ម៉ង់
 🧪 ចំនួនទីបសរុប: ${totalTubes} ទីប
+🟢 បានទូទាត់: ${paidCount} នាក់ ($${paidAmount.toFixed(0)})
+🟠 មិនទាន់ទូទាត់: ${unpaidCount} នាក់ ($${unpaidAmount.toFixed(0)})
 💵 ចំណូលសរុប: $${totalRevenue.toFixed(2)}
 💰 ចំណេញសុទ្ធ: $${totalProfit.toFixed(2)}
 ----------------------------------
@@ -513,13 +528,61 @@ bot.on('callback_query', async (queryMsg) => {
       });
     }
 
+    // Save chosen seller in pending session
+    pending.selectedSeller = selectedSeller;
+
     // Acknowledge tap
     bot.answerCallbackQuery(queryMsg.id, {
       text: `✅ បានជ្រើសរើស: ${selectedSeller.name}`,
     });
 
-    // Remove from pending
+    const roleBadge = selectedSeller.role === 'staff' ? 'បុគ្គលិក' : 'អ្នកលក់';
+    const payQuestion = `💳 តើភ្ញៀវម្នាក់នេះបានទូទាត់ប្រាក់រួចហើយឬនៅ?
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${pending.parsed.customerPhone}
+📍 ទីតាំង: ${pending.parsed.destination}, ខេត្ត${pending.parsed.provinceKm}
+🛍️ ឈុត: ${pending.parsed.pkg.nameKm} ($${pending.parsed.pkg.price})
+👨‍💼 អ្នកលក់: ${selectedSeller.name} (${roleBadge})
+-----------------------------------------
+👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ខាងក្រោម៖`;
+
+    return bot.editMessageText(payQuestion, {
+      chat_id: chatId,
+      message_id: messageId,
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🟢 បានទូទាត់រួច (Paid)', callback_data: `pay_${pendingId}_paid` },
+            { text: '🟠 មិនទាន់ទូទាត់ (COD)', callback_data: `pay_${pendingId}_unpaid` },
+          ],
+          [
+            { text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` },
+          ],
+        ],
+      },
+    });
+  }
+
+  // Handle Payment Selection: pay_<pendingId>_<status>
+  if (data.startsWith('pay_')) {
+    const parts = data.split('_');
+    const pendingId = parts[1];
+    const paymentStatus = parts[2] === 'paid' ? 'paid' : 'unpaid';
+
+    const pending = pendingOrders.get(pendingId);
+    if (!pending || !pending.selectedSeller) {
+      return bot.answerCallbackQuery(queryMsg.id, {
+        text: 'ទិន្នន័យនេះបានកត់ត្រារួចហើយ ឬផុតកំណត់!',
+        show_alert: true,
+      });
+    }
+
+    const selectedSeller = pending.selectedSeller;
     pendingOrders.delete(pendingId);
+
+    bot.answerCallbackQuery(queryMsg.id, {
+      text: paymentStatus === 'paid' ? '🟢 បានទូទាត់រួច' : '🟠 មិនទាន់ទូទាត់',
+    });
 
     try {
       // Re-verify duplicate check right before saving
@@ -548,6 +611,7 @@ bot.on('callback_query', async (queryMsg) => {
         },
         orderNumber,
         sellerRole: selectedSeller.role || 'seller',
+        paymentStatus,
       });
 
       // Save directly to Firestore collection 'orders'
@@ -563,6 +627,15 @@ bot.on('callback_query', async (queryMsg) => {
         ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
         : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
+      const payBadge = paymentStatus === 'paid'
+        ? `🟢 បានទូទាត់រួច ($${completeOrder.price})`
+        : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
+
+      const nextToggleStatus = paymentStatus === 'paid' ? 'unpaid' : 'paid';
+      const nextToggleBtnText = paymentStatus === 'paid'
+        ? '🔄 ប្ដូរទៅ: 🟠 មិនទាន់ទូទាត់'
+        : '🔄 ប្ដូរទៅ: 🟢 បានទូទាត់រួច';
+
       const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber})
 -----------------------------------------
 📞 ភ្ញៀវ: ${completeOrder.customerPhone}
@@ -570,23 +643,108 @@ bot.on('callback_query', async (queryMsg) => {
 🛍️ ឈុត: ${pending.parsed.pkg.nameKm} ($${completeOrder.price})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${roleBadge}]
+💳 ស្ថានភាពទូទាត់: ${payBadge}
 💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
 📲 ទិន្នន័យបានចូលទៅក្នុង App Boost & Sales Tracker រួចរាល់!`;
 
-      // Update the message so buttons disappear and confirmation is shown
+      // Update message with instant toggle button
       bot.editMessageText(successMsg, {
         chat_id: chatId,
         message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: nextToggleBtnText, callback_data: `togglepay_${completeOrder.id}_${nextToggleStatus}` }
+            ]
+          ]
+        }
       });
 
-      console.log(`[Order Saved] #${orderNumber} for seller: ${completeOrder.sellerName}, profit: $${completeOrder.orderProfit}`);
+      console.log(`[Order Saved] #${orderNumber} for seller: ${completeOrder.sellerName}, profit: $${completeOrder.orderProfit}, payment: ${paymentStatus}`);
     } catch (err) {
       console.error('Error saving order from callback:', err);
       bot.editMessageText(`❌ មានបញ្ហាក្នុងការរក្សាទុក៖ ${err.message}`, {
         chat_id: chatId,
         message_id: messageId,
+      });
+    }
+  }
+
+  // Handle Toggle Payment: togglepay_<orderId>_<newStatus>
+  if (data.startsWith('togglepay_')) {
+    const parts = data.split('_');
+    const orderId = parts[1];
+    const newStatus = parts[2] === 'paid' ? 'paid' : 'unpaid';
+
+    try {
+      const orderRef = doc(db, 'orders', orderId);
+      const orderSnap = await getDoc(orderRef);
+      if (!orderSnap.exists()) {
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: 'រកមិនឃើញការកុម្ម៉ង់នេះទេ!',
+          show_alert: true,
+        });
+      }
+
+      await setDoc(orderRef, { paymentStatus: newStatus }, { merge: true });
+
+      const updatedOrder = orderSnap.data();
+      updatedOrder.paymentStatus = newStatus;
+
+      bot.answerCallbackQuery(queryMsg.id, {
+        text: newStatus === 'paid' ? '✅ ប្ដូរទៅ: បានទូទាត់រួច' : '✅ ប្ដូរទៅ: មិនទាន់ទូទាត់',
+      });
+
+      const nextStatus = newStatus === 'paid' ? 'unpaid' : 'paid';
+      const nextBtnText = newStatus === 'paid'
+        ? '🔄 ប្ដូរទៅ: 🟠 មិនទាន់ទូទាត់'
+        : '🔄 ប្ដូរទៅ: 🟢 បានទូទាត់រួច';
+
+      const payBadge = newStatus === 'paid'
+        ? `🟢 បានទូទាត់រួច ($${updatedOrder.price || 0})`
+        : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price || 0})`;
+
+      const roleBadge = updatedOrder.sellerRole === 'staff'
+        ? 'បុគ្គលិក (កម្រៃ $0)'
+        : `អ្នកលក់ (កម្រៃ: $${updatedOrder.sellerCommission || 0})`;
+
+      const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
+        ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+        : updatedOrder.companyDeliveryType === 'cod'
+        ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
+        : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+
+      const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
+-----------------------------------------
+📞 ភ្ញៀវ: ${updatedOrder.customerPhone}
+📍 ទីតាំង: ${updatedOrder.destination}
+🛍️ ឈុត: ឈុត ${updatedOrder.tubes || 3} ទីប ($${updatedOrder.price || 0})
+🚚 សេវាដឹក: ${deliveryTypeBadge}
+👨‍💼 អ្នកលក់: ${updatedOrder.sellerName} [${roleBadge}]
+💳 ស្ថានភាពទូទាត់: ${payBadge}
+💰 ចំណេញសុទ្ធ: $${Number(updatedOrder.orderProfit || 0).toFixed(2)}
+📅 កាលបរិច្ឆេទ: ${updatedOrder.date}
+-----------------------------------------
+📲 ទិន្នន័យបានចូលទៅក្នុង App Boost & Sales Tracker រួចរាល់!`;
+
+      bot.editMessageText(updatedSuccessMsg, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: nextBtnText, callback_data: `togglepay_${orderId}_${nextStatus}` }
+            ]
+          ]
+        }
+      });
+    } catch (e) {
+      console.error('Error toggling payment status:', e);
+      bot.answerCallbackQuery(queryMsg.id, {
+        text: `កំហុស: ${e.message}`,
+        show_alert: true,
       });
     }
   }

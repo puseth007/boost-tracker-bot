@@ -246,6 +246,15 @@ function parseOrderText(text) {
   // Parse Date
   const date = parseKhmerDate(dateRaw);
 
+  // Parse Payment Status: Check if customer paid via ABA, transfer, etc.
+  let paymentStatus = 'unpaid';
+  const normText = text.toLowerCase();
+  if (/វេររួច|បង់រួច|ផ្ទេររួច|បានបង់|បានវេរ|paid|aba|acleda|wing|វេរប្រាក់រួច|បង់ប្រាក់រួច|ទូទាត់រួច/i.test(normText)) {
+    paymentStatus = 'paid';
+  } else if (/cod|ស៊ីអូឌី/i.test(normText)) {
+    paymentStatus = 'unpaid';
+  }
+
   return {
     customerPhone,
     provinceId,
@@ -258,6 +267,7 @@ function parseOrderText(text) {
     deliveryFee,
     sellerName,
     date,
+    paymentStatus,
     rawText: text,
   };
 }
@@ -269,6 +279,7 @@ function buildCompleteOrder({
   parsed,
   orderNumber,
   sellerRole = 'seller', // 'seller' | 'staff'
+  paymentStatus = null,
 }) {
   const { pkg, deliveryMethod, companyDeliveryType, deliveryFee, sellerName, provinceId, destination, customerPhone, date } = parsed;
 
@@ -300,6 +311,7 @@ function buildCompleteOrder({
     companyDeliveryType,
     deliveryFee,
     date,
+    paymentStatus: paymentStatus || parsed.paymentStatus || 'unpaid',
     note: 'បញ្ចូលតាមរយៈ Telegram Chatbot',
     createdBy: 'Telegram Bot',
     updatedAt: new Date().toISOString(),
