@@ -656,7 +656,7 @@ bot.on('callback_query', async (queryMsg) => {
         reply_markup: {
           inline_keyboard: [
             [
-              { text: nextToggleBtnText, callback_data: `togglepay_${completeOrder.id}_${nextToggleStatus}` }
+              { text: nextToggleBtnText, callback_data: `tgpay:${completeOrder.id}:${nextToggleStatus}` }
             ]
           ]
         }
@@ -672,11 +672,26 @@ bot.on('callback_query', async (queryMsg) => {
     }
   }
 
-  // Handle Toggle Payment: togglepay_<orderId>_<newStatus>
-  if (data.startsWith('togglepay_')) {
-    const parts = data.split('_');
-    const orderId = parts[1];
-    const newStatus = parts[2] === 'paid' ? 'paid' : 'unpaid';
+  // Handle Toggle Payment: tgpay:<orderId>:<newStatus> or togglepay_<orderId>_<newStatus>
+  if (data.startsWith('togglepay_') || data.startsWith('tgpay:')) {
+    let orderId = '';
+    let newStatus = 'unpaid';
+
+    if (data.startsWith('tgpay:')) {
+      const parts = data.split(':');
+      orderId = parts[1];
+      newStatus = parts[2] === 'paid' ? 'paid' : 'unpaid';
+    } else {
+      // Backwards-compatible with togglepay_ord_xxx_paid
+      const raw = data.substring('togglepay_'.length);
+      const lastUnderscore = raw.lastIndexOf('_');
+      if (lastUnderscore !== -1) {
+        orderId = raw.substring(0, lastUnderscore);
+        newStatus = raw.substring(lastUnderscore + 1) === 'paid' ? 'paid' : 'unpaid';
+      } else {
+        orderId = raw;
+      }
+    }
 
     try {
       const orderRef = doc(db, 'orders', orderId);
@@ -735,7 +750,7 @@ bot.on('callback_query', async (queryMsg) => {
         reply_markup: {
           inline_keyboard: [
             [
-              { text: nextBtnText, callback_data: `togglepay_${orderId}_${nextStatus}` }
+              { text: nextBtnText, callback_data: `tgpay:${orderId}:${nextStatus}` }
             ]
           ]
         }
