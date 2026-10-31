@@ -732,11 +732,15 @@ bot.on('callback_query', async (queryMsg) => {
         ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
         : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
 
+      const pkgTitle = updatedOrder.packageId === 'combo_1_1'
+        ? 'ឈុត ឫសដូង ១កំប៉ុង + គ្រីម ១ទីប'
+        : `ឈុត ${updatedOrder.tubes || 3} ទីប`;
+
       const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
 📞 ភ្ញៀវ: ${updatedOrder.customerPhone}
 📍 ទីតាំង: ${updatedOrder.destination}
-🛍️ ឈុត: ឈុត ${updatedOrder.tubes || 3} ទីប ($${updatedOrder.price || 0})
+🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
 👨‍💼 អ្នកលក់: ${updatedOrder.sellerName} [${roleBadge}]
 💳 ស្ថានភាពទូទាត់: ${payBadge}
