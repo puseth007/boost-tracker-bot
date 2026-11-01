@@ -408,17 +408,15 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       }
 
       await loadSellersFromDb();
+      // Filter out any ignored/deleted sellers
+      cachedSellers = cachedSellers.filter(s => {
+        const n = (s.name || '').replace(/[\s\u200B\u200C\u200D]+/g, '');
+        return !n.includes('ស៊ីងអឺ') && !n.includes('សុីងអុឺ');
+      });
       if (cachedSellers.length === 0) {
-        const detectedName = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' ? parsed.sellerName : 'ទូទៅ';
         cachedSellers = [
-          { name: detectedName, role: 'seller' },
+          { name: 'វី សៅបេន', role: 'seller' },
         ];
-      } else if (parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
-        // If message has seller name that is not yet in cached sellers, add to top
-        const exists = cachedSellers.some(s => s.name === parsed.sellerName);
-        if (!exists) {
-          cachedSellers.unshift({ name: parsed.sellerName, role: 'seller' });
-        }
       }
 
       const pendingId = `p${Date.now().toString(36)}`;
