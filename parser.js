@@ -31,10 +31,10 @@ const CAMBODIA_PROVINCES = [
 
 const PACKAGES = [
   { id: 'set_1', tubes: 1, cans: 0, nameKm: 'ឈុត ១ ទីប', price: 17 },
-  { id: 'set_3', tubes: 3, cans: 0, nameKm: 'ឈុត ៣ ទីប (២ ថែម ១)', price: 30 },
-  { id: 'set_6', tubes: 6, cans: 0, nameKm: 'ឈុត ៦ ទីប (៣ ថែម ៣)', price: 50 },
-  { id: 'set_10', tubes: 10, cans: 0, nameKm: 'ឈុត ១០ ទីប (៥ ថែម ៥)', price: 70 },
-  { id: 'combo_1_1', tubes: 1, cans: 1, nameKm: 'ឈុត ឫសដូង ១កំប៉ុង + គ្រីម ១ទីប', price: 50 },
+  { id: 'set_3', tubes: 3, cans: 0, nameKm: 'ឈុត ២ + ១ ទីប', price: 30 },
+  { id: 'set_6', tubes: 6, cans: 0, nameKm: 'ឈុត ៣ + ៣ ទីប', price: 50 },
+  { id: 'set_10', tubes: 10, cans: 0, nameKm: 'ឈុត ៥ + ៥ ទីប', price: 70 },
+  { id: 'combo_1_1', tubes: 1, cans: 1, nameKm: 'ឈុត ១ កំប៉ុង + ១ គ្រីម', price: 50 },
 ];
 
 const SELLER_COMMISSION_RATES = {
@@ -231,7 +231,7 @@ function parseOrderText(text) {
       id: 'combo_1_1',
       tubes: 1,
       cans: 1,
-      nameKm: 'ឈុត ឫសដូង ១កំប៉ុង + គ្រីម ១ទីប',
+      nameKm: 'ឈុត ១ កំប៉ុង + ១ គ្រីម',
       price: 50,
     };
   } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5')) {
@@ -296,6 +296,7 @@ function parseOrderText(text) {
   const normDelivery = deliveryRaw.toLowerCase() + ' ' + text.toLowerCase();
   const isMoto = normDelivery.includes('ម៉ូតូ') || normDelivery.includes('moto');
   const isCod = normDelivery.includes('cod') || normDelivery.includes('ប្រមូលប្រាក់');
+  const isJt = normDelivery.includes('j&t') || normDelivery.includes('jt') || normDelivery.includes('j & t') || normDelivery.includes('j and t') || normDelivery.includes('ជេអេនធី') || normDelivery.includes('ជេអិនធី');
 
   if (isMoto) {
     deliveryMethod = 'moto';
@@ -303,7 +304,10 @@ function parseOrderText(text) {
     deliveryFee = 2.0;
   } else {
     deliveryMethod = 'company';
-    if (isCod) {
+    if (isJt) {
+      companyDeliveryType = 'jt';
+      deliveryFee = 2.5;
+    } else if (isCod) {
       companyDeliveryType = 'cod';
       deliveryFee = 3.0;
     } else {

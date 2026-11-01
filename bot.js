@@ -471,6 +471,8 @@ bot.on('message', async (msg) => {
 
     const deliveryTypeBadge = parsed.deliveryMethod === 'moto'
       ? `ម៉ូតូ ($${parsed.deliveryFee})`
+      : parsed.companyDeliveryType === 'jt'
+      ? `ក្រុមហ៊ុន J&T ($${parsed.deliveryFee})`
       : parsed.companyDeliveryType === 'cod'
       ? `ក្រុមហ៊ុន COD ($${parsed.deliveryFee})`
       : `ក្រុមហ៊ុន ធម្មតា ($${parsed.deliveryFee})`;
@@ -638,6 +640,8 @@ bot.on('callback_query', async (queryMsg) => {
 
       const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
         ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+        : completeOrder.companyDeliveryType === 'jt'
+        ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
         : completeOrder.companyDeliveryType === 'cod'
         ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
         : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
@@ -728,12 +732,14 @@ bot.on('callback_query', async (queryMsg) => {
 
       const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
         ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+        : updatedOrder.companyDeliveryType === 'jt'
+        ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2.5})`
         : updatedOrder.companyDeliveryType === 'cod'
         ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
         : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
 
       const pkgTitle = updatedOrder.packageId === 'combo_1_1'
-        ? 'ឈុត ឫសដូង ១កំប៉ុង + គ្រីម ១ទីប'
+        ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
         : `ឈុត ${updatedOrder.tubes || 3} ទីប`;
 
       const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
