@@ -89,6 +89,24 @@ function normalizeKhmer(str) {
   return str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
 }
 
+function sanitizeForFirestore(obj) {
+  if (typeof obj === 'string') {
+    const wellFormed = obj.toWellFormed ? obj.toWellFormed() : obj;
+    return wellFormed.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '').trim();
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeForFirestore);
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    const res = {};
+    for (const k of Object.keys(obj)) {
+      res[k] = sanitizeForFirestore(obj[k]);
+    }
+    return res;
+  }
+  return obj;
+}
+
 /**
  * Factory function to create and run an isolated Telegram Bot instance
  */
@@ -391,10 +409,16 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 
       await loadSellersFromDb();
       if (cachedSellers.length === 0) {
+        const detectedName = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' ? parsed.sellerName : 'ទូទៅ';
         cachedSellers = [
-          { name: 'ពូ ពន្លក', role: 'seller' },
-          { name: 'ចែ ម៉ៅ', role: 'staff' },
+          { name: detectedName, role: 'seller' },
         ];
+      } else if (parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
+        // If message has seller name that is not yet in cached sellers, add to top
+        const exists = cachedSellers.some(s => s.name === parsed.sellerName);
+        if (!exists) {
+          cachedSellers.unshift({ name: parsed.sellerName, role: 'seller' });
+        }
       }
 
       const pendingId = `p${Date.now().toString(36)}`;
@@ -570,7 +594,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 
         completeOrder.sellerName = selectedSeller.name;
 
-        await setDoc(doc(db, ordersCol, completeOrder.id), completeOrder);
+        await setDoc(doc(db, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
 
         const payBadge = paymentStatus === 'paid'
           ? `🟢 បានទូទាត់ ($${completeOrder.price})`

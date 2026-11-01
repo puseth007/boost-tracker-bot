@@ -63,13 +63,13 @@ function normalizeKhmerDigits(str) {
   return res;
 }
 
-// Clean text by stripping emojis and leading decorative marks
+// Clean text by stripping emojis and leading decorative marks safely without breaking Unicode surrogates
 function cleanLineText(str) {
   if (!str) return '';
-  return str
-    .replace(/^[\s👉▶️➡️📍🛍️🚚👨‍💼💳💰📅💜*#-]+/g, '')
-    .replace(/[\s👉▶️➡️📍🛍️🚚👨‍💼💳💰📅💜*#-]+$/g, '')
-    .trim();
+  let res = str.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '');
+  res = res.replace(/^[\s*#\-:៖•~`!@$%^&*()+=[\]{}'\"<>?\/]+/g, '');
+  res = res.replace(/[\s*#\-:៖•~`!@$%^&*()+=[\]{}'\"<>?\/]+$/g, '');
+  return (res.toWellFormed ? res.toWellFormed() : res).trim();
 }
 
 // Parse Date string into YYYY-MM-DD
@@ -209,9 +209,15 @@ function parseOrderText(text) {
       .replace(new RegExp(matchedProv.km, 'g'), '')
       .replace(/^[\s,:-]+|[\s,:-]+$/g, '')
       .trim();
-    if (!destination) {
-      destination = matchedProv.km;
-    }
+  }
+  // Sanitize destination to remove emojis, variation selectors, or lone surrogates
+  destination = destination.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '');
+  destination = destination.replace(/^[\s,:-:៖•~`!@$%^&*()+=[\]{}'\"<>?\/]+|[\s,:-:៖•~`!@$%^&*()+=[\]{}'\"<>?\/]+$/g, '').trim();
+  if (destination.toWellFormed) {
+    destination = destination.toWellFormed();
+  }
+  if (!destination) {
+    destination = matchedProv ? matchedProv.km : 'ភ្នំពេញ';
   }
 
   // Package & Product Detection:
@@ -370,17 +376,21 @@ function buildCompleteOrder({
   const timestamp = Date.now();
   const id = `ord_${timestamp}_${Math.random().toString(36).substring(2, 6)}`;
 
+  const cleanDestination = (destination || 'N/A').replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '').toWellFormed().trim();
+  const cleanPhone = (customerPhone || 'N/A').toWellFormed().trim();
+  const cleanSeller = (sellerName || 'ទូទៅ').replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '').toWellFormed().trim();
+
   return {
     id,
     orderNumber,
-    customerPhone: customerPhone || 'N/A',
-    sellerName: sellerName.trim(),
+    customerPhone: cleanPhone,
+    sellerName: cleanSeller,
     sellerRole,
     sellerCommission,
     productCost,
     orderProfit,
     provinceId,
-    destination: destination || 'N/A',
+    destination: cleanDestination || 'N/A',
     packageId: pkg.id,
     tubes,
     cans,
