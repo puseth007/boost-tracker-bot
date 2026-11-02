@@ -408,11 +408,71 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       }
 
       await loadSellersFromDb();
-      // Filter out any ignored/deleted sellers
-      cachedSellers = cachedSellers.filter(s => {
-        const n = (s.name || '').replace(/[\s\u200B\u200C\u200D]+/g, '');
-        return !n.includes('ស៊ីងអឺ') && !n.includes('សុីងអុឺ');
-      });
+
+      const sellerName = parsed.sellerName || 'ទូទៅ';
+      const teamLeader = parsed.teamLeader || (sellerName.includes('ណាក់') ? 'ណាក់ ចំរើន' : 'សុីង អុឺ');
+
+      // Match seller role from cached sellers
+      const matchedSellerObj = cachedSellers.find((s) => (s.name || '').replace(/\s+/g, '') === sellerName.replace(/\s+/g, ''));
+      const sellerRole = matchedSellerObj ? matchedSellerObj.role : 'seller';
+
+      // Auto-record immediately without buttons if sellerName is detected in the message text!
+      if (sellerName && sellerName !== 'ទូទៅ') {
+        const orderNumber = await getNextOrderNumber();
+        const completeOrder = buildCompleteOrder({
+          parsed,
+          orderNumber,
+          sellerRole,
+          paymentStatus: 'unpaid',
+          teamLeader,
+        });
+        completeOrder.sellerName = sellerName;
+        completeOrder.teamLeader = teamLeader;
+
+        await setDoc(doc(db, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+
+        const payBadge = `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
+        const roleBadge = sellerRole === 'staff'
+          ? 'បុគ្គលិក (កម្រៃ $0)'
+          : `អ្នកលក់ (កម្រៃ: $${completeOrder.sellerCommission})`;
+
+        const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
+          ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+          : completeOrder.companyDeliveryType === 'jt'
+          ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
+          : completeOrder.companyDeliveryType === 'cod'
+          ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
+          : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
+
+        const pkgTitle = completeOrder.packageId === 'combo_1_1'
+          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
+          : `ឈុត ${completeOrder.tubes} ទីប`;
+
+        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [${shopName}]
+-----------------------------------------
+📞 ភ្ញៀវ: ${completeOrder.customerPhone}
+📍 ទីតាំង: ${completeOrder.destination}
+🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
+🚚 សេវាដឹក: ${deliveryTypeBadge}
+👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${roleBadge}]
+👑 មេក្រុម: ${completeOrder.teamLeader}
+💳 ស្ថានភាពទូទាត់: ${payBadge}
+💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
+📅 កាលបរិច្ឆេទ: ${completeOrder.date}
+-----------------------------------------
+📲 ទិន្នន័យបានចូលទៅក្នុង App ${appTitle} រួចរាល់!
+👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
+
+        console.log(`[${shopName} Auto-Order Saved] #${orderNumber} for seller: ${completeOrder.sellerName} (Team: ${completeOrder.teamLeader})`);
+
+        return bot.sendMessage(chatId, successMsg, {
+          reply_to_message_id: msg.message_id,
+          reply_markup: {
+            inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, 'unpaid'),
+          },
+        });
+      }
+
       if (cachedSellers.length === 0) {
         cachedSellers = [
           { name: 'វី សៅបេន', role: 'seller' },
@@ -422,6 +482,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       const pendingId = `p${Date.now().toString(36)}`;
       pendingOrders.set(pendingId, {
         parsed,
+        teamLeader: parsed.teamLeader || teamLeader || 'សុីង អុឺ',
         sellers: [...cachedSellers],
         chatId,
         originalMsgId: msg.message_id,
@@ -583,14 +644,17 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 
       try {
         const orderNumber = await getNextOrderNumber();
+        const teamLeader = pending.teamLeader || pending.parsed.teamLeader || 'សុីង អុឺ';
         const completeOrder = buildCompleteOrder({
           parsed: pending.parsed,
           orderNumber,
           sellerRole: selectedSeller.role,
           paymentStatus,
+          teamLeader,
         });
 
         completeOrder.sellerName = selectedSeller.name;
+        completeOrder.teamLeader = teamLeader;
 
         await setDoc(doc(db, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
 
