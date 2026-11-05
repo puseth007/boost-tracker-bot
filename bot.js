@@ -403,8 +403,12 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 
   loadSellersFromDb();
 
-  async function getNextOrderNumber() {
+  async function getNextOrderNumber(isTeamUnitsOnly = false) {
     try {
+      if (isTeamUnitsOnly) {
+        const snap = await getDocs(collection(dbTeamUnits, 'team_units_records'));
+        return snap.size + 1;
+      }
       const snap = await getDocs(collection(dbOrders, ordersCol));
       return snap.size + 1;
     } catch (e) {
@@ -605,7 +609,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       // ====================================================
       if (!parsed.isSingEuTeam && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
         const resolved = await resolveTeamMember(parsed.sellerName);
-        const orderNumber = await getNextOrderNumber();
+        const orderNumber = await getNextOrderNumber(true);
         const completeOrder = buildCompleteOrder({
           parsed,
           orderNumber,
@@ -648,7 +652,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
           ? `\n💡 ចំណាំ: ឈ្មោះ «${completeOrder.sellerName}» មិនទាន់មានក្រុមក្នុងប្រព័ន្ធទេ! Bot បានដាក់ចូលក្នុង «មិនទាន់មានក្រុម» ជាបណ្ដោះអាសន្ន។ លោកអ្នកអាចចូលទៅផ្ទេរគាត់ចូលក្រុមត្រឹមត្រូវក្នុង App ទី ២ បានគ្រប់ពេល!`
           : '';
 
-        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [${shopName}]
+        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [App ទី ២: Team Units Tracker]
 -----------------------------------------
 📞 ភ្ញៀវ: ${completeOrder.customerPhone}
 📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
