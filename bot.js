@@ -416,13 +416,12 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
     }
   }
 
-  // Duplicate Check across both Database 1 and Database 2
-  async function checkDuplicateOrder({ customerPhone, destination, provinceId, date }) {
+  // Independent Check for Database 1 (dbOrders / App 1)
+  async function checkExistsInDb1({ customerPhone, destination, provinceId, date }) {
     if (!customerPhone || !date) return null;
     const cleanPhone = customerPhone.replace(/\D/g, '');
     const normNewDest = (destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
 
-    // 1. Check Database 1 (dbOrders)
     try {
       const q1 = query(collection(dbOrders, ordersCol), where('date', '==', date));
       const snap1 = await getDocs(q1);
@@ -449,8 +448,13 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
     } catch (err) {
       console.error(`[${shopName}] Error checking duplicate in dbOrders:`, err.message);
     }
+    return null;
+  }
 
-    // 2. Check Database 2 (dbTeamUnits)
+  // Independent Check for Database 2 (dbTeamUnits / App 2)
+  async function checkExistsInDb2({ customerPhone, date }) {
+    if (!customerPhone || !date) return null;
+    const cleanPhone = customerPhone.replace(/\D/g, '');
     try {
       const q2 = query(collection(dbTeamUnits, 'team_units_records'), where('date', '==', date));
       const snap2 = await getDocs(q2);
@@ -464,7 +468,6 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
     } catch (err) {
       console.error(`[${shopName}] Error checking duplicate in dbTeamUnits:`, err.message);
     }
-
     return null;
   }
 
@@ -573,33 +576,28 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         );
       }
 
-      // Check duplicate
-      const duplicate = await checkDuplicateOrder({
+      // Load hierarchies
+      await loadTeamUnitsGroups();
+      await loadSellersFromDb();
+
+      // Independent Check for existence in Database 1 and Database 2
+      const dupDb1 = await checkExistsInDb1({
         customerPhone: parsed.customerPhone,
         destination: parsed.destination,
         provinceId: parsed.provinceId,
         date: parsed.date,
       });
 
-      if (duplicate) {
-        const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយ (ទិន្នន័យស្ទួន)!
------------------------------------------
-📞 លេខភ្ញៀវ: ${duplicate.customerPhone}
-📍 ទីតាំង: ${duplicate.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
-📅 កាលបរិច្ឆេទ: ${duplicate.date}
-👨‍💼 អ្នកលក់: ${duplicate.sellerName || 'N/A'}
-🛍️ ឈុត: ${duplicate.tubes || parsed.pkg.tubes} ទីប
------------------------------------------
-👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+      const dupDb2 = await checkExistsInDb2({
+        customerPhone: parsed.customerPhone,
+        date: parsed.date,
+      });
 
-        return bot.sendMessage(chatId, dupMsg, {
-          reply_to_message_id: msg.message_id,
-        });
-      }
-
-      // Load hierarchies
-      await loadTeamUnitsGroups();
-      await loadSellersFromDb();
+      // Detect if message belongs to Team Sing Eu
+      const isSingEu = parsed.isSingEuTeam ||
+        isSingEuLeader(parsed.sellerName) ||
+        isSingEuLeader(parsed.sellerRaw) ||
+        isSingEuMemberOrTeam(parsed.sellerName, parsed.teamLeader);
 
       // ====================================================
       // CASE 1: OTHER TEAMS DETECTED (AUTO-RECORD)
@@ -607,7 +605,23 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       // ⚠️ RULE: RECORD ONLY INTO DATABASE 2 (team-units-db)!
       // DO NOT WRITE INTO DATABASE 1!
       // ====================================================
-      if (!parsed.isSingEuTeam && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
+      if (!isSingEu && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
+        if (dupDb2) {
+          const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយក្នុង App ទី ២ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${dupDb2.customerPhone}
+📍 ទីតាំង: ${dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dupDb2.date}
+👨‍💼 អ្នកលក់: ${dupDb2.sellerName || 'N/A'}
+🛍️ ឈុត: ${dupDb2.tubes || parsed.pkg.tubes} ទីប
+-----------------------------------------
+👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+
+          return bot.sendMessage(chatId, dupMsg, {
+            reply_to_message_id: msg.message_id,
+          });
+        }
+
         const resolved = await resolveTeamMember(parsed.sellerName);
         const orderNumber = await getNextOrderNumber(true);
         const completeOrder = buildCompleteOrder({
@@ -680,8 +694,27 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       // ====================================================
       // CASE 2: TEAM SING EU (OR UNKNOWN SELLER)
       // Must prompt buttons with team members so user picks!
-      // Once picked: SAVES TO BOTH DATABASE 1 AND DATABASE 2!
+      // SMART SYNC RULE:
+      // If BOTH App 1 and App 2 have it -> reject as duplicate!
+      // If App 1 does NOT have it (even if App 2 has it) -> ACCEPT and save to App 1!
+      // If App 2 does NOT have it (even if App 1 has it) -> ACCEPT and save to App 2!
       // ====================================================
+      if (dupDb1 && dupDb2) {
+        const dupMsg = `⚠️ ការកុម្ម៉ង់នេះមានរួចរាល់ទាំងក្នុង App 1 និង App 2 ហើយ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${dupDb1.customerPhone || dupDb2.customerPhone}
+📍 ទីតាំង: ${dupDb1.destination || dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dupDb1.date || dupDb2.date}
+👨‍💼 អ្នកលក់: ${dupDb1.sellerName || dupDb2.sellerName || 'N/A'}
+🛍️ ឈុត: ${dupDb1.tubes || dupDb2.tubes || parsed.pkg.tubes} ទីប
+-----------------------------------------
+👉 ទាំង App 1 និង App 2 សុទ្ធតែមានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+
+        return bot.sendMessage(chatId, dupMsg, {
+          reply_to_message_id: msg.message_id,
+        });
+      }
+
       const singEuGroup = cachedTeamGroups.find((g) => g.id === 'group_sing_e') || {
         id: 'group_sing_e',
         name: 'Team ស៊ីង អ៊ី',
@@ -713,6 +746,8 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         chatId,
         originalMsgId: msg.message_id,
         createdAt: Date.now(),
+        alreadyInDb1: !!dupDb1,
+        alreadyInDb2: !!dupDb2,
       });
 
       setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
@@ -751,7 +786,14 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         ? `ក្រុមហ៊ុន COD ($${parsed.deliveryFee})`
         : `ក្រុមហ៊ុន ធម្មតា ($${parsed.deliveryFee})`;
 
-      const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! [Team ស៊ីង អ៊ី]
+      let syncNotice = '';
+      if (dupDb2 && !dupDb1) {
+        syncNotice = '\n💡 (ចំណាំ: ក្នុង App 2 មានទិន្នន័យនេះរួចហើយ Bot នឹងបញ្ចូលតែទៅក្នុង App 1 ប៉ុណ្ណោះ)';
+      } else if (dupDb1 && !dupDb2) {
+        syncNotice = '\n💡 (ចំណាំ: ក្នុង App 1 មានទិន្នន័យនេះរួចហើយ Bot នឹងបញ្ចូលតែទៅក្នុង App 2 ប៉ុណ្ណោះ)';
+      }
+
+      const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! [Team ស៊ីង អ៊ី]${syncNotice}
 -----------------------------------------
 📞 លេខភ្ញៀវ: ${parsed.customerPhone}
 📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
@@ -837,15 +879,32 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         completeOrder.sellerName = selectedMember.name;
         completeOrder.teamLeader = selectedMember.groupName || 'Team ស៊ីង អ៊ី';
 
-        // 🌟 RULE: Team Sing Eu is saved to Database 1 (Orders) AND Database 2 (Team Units)!
-        await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+        let syncResultFooter = '';
 
-        await syncToTeamUnitsDb({
-          completeOrder,
-          resolvedMember: selectedMember,
-          tubes: completeOrder.tubes,
-          cans: completeOrder.cans,
-        });
+        if (!pending.alreadyInDb1 && !pending.alreadyInDb2) {
+          // Normal Dual Save: save to both Database 1 and Database 2
+          await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+          await syncToTeamUnitsDb({
+            completeOrder,
+            resolvedMember: selectedMember,
+            tubes: completeOrder.tubes,
+            cans: completeOrder.cans,
+          });
+          syncResultFooter = `📲 ទិន្នន័យបានចូល Database 1 (App Boost) និង Database 2 (App Team Units) រួចរាល់!`;
+        } else if (!pending.alreadyInDb1 && pending.alreadyInDb2) {
+          // App 1 missing, App 2 already exists -> Fill in App 1 only!
+          await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+          syncResultFooter = `📲 បានកត់ត្រាបំពេញបន្ថែមចូល App 1 (Database 1) រួចរាល់!\n💡 (ចំណាំ: ក្នុង App 2 មានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើយ)`;
+        } else if (pending.alreadyInDb1 && !pending.alreadyInDb2) {
+          // App 2 missing, App 1 already exists -> Fill in App 2 only!
+          await syncToTeamUnitsDb({
+            completeOrder,
+            resolvedMember: selectedMember,
+            tubes: completeOrder.tubes,
+            cans: completeOrder.cans,
+          });
+          syncResultFooter = `📲 បានកត់ត្រាបំពេញបន្ថែមចូល App 2 (Database 2) រួចរាល់!\n💡 (ចំណាំ: ក្នុង App 1 មានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើយ)`;
+        }
 
         const payBadge = paymentStatus === 'paid'
           ? `🟢 បានទូទាត់ ($${completeOrder.price})`
@@ -880,7 +939,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-📲 ទិន្នន័យបានចូល Database 1 (App Boost) និង Database 2 (App Team Units) រួចរាល់!
+${syncResultFooter}
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
         bot.editMessageText(successMsg, {
