@@ -262,39 +262,52 @@ async function resolveTeamMember(rawName) {
     }
   }
 
-  // 3. New seller auto-creation (e.g. ហ៊ុន ចាន់ធី)
+  // 3. Unknown / New seller (Option 3 requested by user):
+  // Put into "មិនទាន់មានក្រុម" (group_unassigned) so admin can organize/move them in App 2!
   try {
-    const cleanId = `group_${Date.now()}`;
+    let unassignedGrp = cachedTeamGroups.find((g) => g.id === 'group_unassigned' || (g.name || '').includes('មិនទាន់មានក្រុម'));
     const cleanName = trimmed;
-    const newGroup = {
-      id: cleanId,
-      name: `Team ${cleanName}`,
-      leaderName: cleanName,
-      leaderRole: 'មេក្រុម',
-      members: [],
-    };
-    const updated = [...cachedTeamGroups, newGroup];
+
+    if (!unassignedGrp) {
+      unassignedGrp = {
+        id: 'group_unassigned',
+        name: 'មិនទាន់មានក្រុម',
+        leaderName: 'អ្នកលក់ទូទៅ',
+        leaderRole: 'មេក្រុម',
+        members: [{ id: `m_${Date.now()}`, name: cleanName, role: 'កូនក្រុម' }],
+      };
+      cachedTeamGroups.push(unassignedGrp);
+    } else {
+      const alreadyInList = (unassignedGrp.members || []).some((m) => normalizeKhmer(m.name) === norm);
+      if (!alreadyInList) {
+        if (!unassignedGrp.members) unassignedGrp.members = [];
+        unassignedGrp.members.push({ id: `m_${Date.now()}`, name: cleanName, role: 'កូនក្រុម' });
+      }
+    }
+
     await setDoc(doc(dbTeamUnits, 'team_units_metadata', 'groups_hierarchy'), {
-      groups: updated,
+      groups: cachedTeamGroups,
       updatedAt: new Date().toISOString(),
     }, { merge: true });
-    cachedTeamGroups = updated;
-    console.log(`[Auto-Registered New Team] ${newGroup.name} with leader ${cleanName}`);
+
+    console.log(`[Unassigned Seller Registered] Added ${cleanName} to មិនទាន់មានក្រុម`);
     return {
       sellerName: cleanName,
-      groupId: cleanId,
-      groupName: newGroup.name,
-      role: 'មេក្រុម',
+      groupId: unassignedGrp.id,
+      groupName: unassignedGrp.name,
+      role: 'កូនក្រុម',
+      isUnassigned: true,
     };
   } catch (err) {
-    console.error('Error auto-creating new team:', err.message);
+    console.error('Error handling unassigned seller:', err.message);
   }
 
   return {
     sellerName: trimmed,
-    groupId: 'group_general',
-    groupName: 'Team ទូទៅ',
-    role: 'មេក្រុម',
+    groupId: 'group_unassigned',
+    groupName: 'មិនទាន់មានក្រុម',
+    role: 'កូនក្រុម',
+    isUnassigned: true,
   };
 }
 
@@ -631,6 +644,10 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
           ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
           : `${completeOrder.tubes} ទីប`;
 
+        const unassignedNotice = resolved.isUnassigned
+          ? `\n💡 ចំណាំ: ឈ្មោះ «${completeOrder.sellerName}» មិនទាន់មានក្រុមក្នុងប្រព័ន្ធទេ! Bot បានដាក់ចូលក្នុង «មិនទាន់មានក្រុម» ជាបណ្ដោះអាសន្ន។ លោកអ្នកអាចចូលទៅផ្ទេរគាត់ចូលក្រុមត្រឹមត្រូវក្នុង App ទី ២ បានគ្រប់ពេល!`
+          : '';
+
         const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [${shopName}]
 -----------------------------------------
 📞 ភ្ញៀវ: ${completeOrder.customerPhone}
@@ -643,7 +660,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 💳 ស្ថានភាពទូទាត់: ${payBadge}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!
+📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!${unassignedNotice}
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
         console.log(`[Database 2 Only Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
