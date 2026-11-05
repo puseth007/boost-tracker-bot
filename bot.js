@@ -168,16 +168,20 @@ async function resolveTeamMember(rawName) {
   }
 
   // 1. Direct aliases & known member maps
-  if (norm.includes('បុប្ផា') || norm.includes('bopha')) {
+  if (norm.includes('បុប្ផា') || norm.includes('បូប្ផា') || norm.includes('bopha')) {
     const bGrp = cachedTeamGroups.find((g) =>
       normalizeKhmer(g.name).includes('bopha') ||
+      normalizeKhmer(g.name).includes('bo pha') ||
+      normalizeKhmer(g.name).includes('បុប្ផា') ||
+      normalizeKhmer(g.name).includes('បូប្ផា') ||
       normalizeKhmer(g.leaderName).includes('bopha') ||
-      normalizeKhmer(g.name).includes('បុប្ផា')
+      normalizeKhmer(g.leaderName).includes('បុប្ផា') ||
+      normalizeKhmer(g.leaderName).includes('បូប្ផា')
     );
     return {
-      sellerName: 'ឡា បុប្ផា',
-      groupId: bGrp ? bGrp.id : 'group_1793777252222',
-      groupName: bGrp ? bGrp.name : 'Team Bopha',
+      sellerName: bGrp ? bGrp.leaderName : 'ឡា បុប្ផា',
+      groupId: bGrp ? bGrp.id : 'group_1793850146091',
+      groupName: bGrp ? bGrp.name : 'Team Bo pha',
       role: 'មេក្រុម',
     };
   }
@@ -303,12 +307,18 @@ async function syncToTeamUnitsDb({ completeOrder, resolvedMember, tubes, cans })
     const unitRecord = {
       id: recordId,
       orderId: completeOrder.id,
+      orderNumber: completeOrder.orderNumber || '',
       date: completeOrder.date,
       customerPhone: completeOrder.customerPhone || '',
       destination: completeOrder.destination || '',
       price: completeOrder.price || 0,
       paymentStatus: completeOrder.paymentStatus || 'unpaid',
       sellerName: resolvedMember.sellerName || completeOrder.sellerName,
+      teamLeader: resolvedMember.groupName || completeOrder.teamLeader || 'ក្រុម',
+      packageId: completeOrder.packageId || 'set_3',
+      deliveryMethod: completeOrder.deliveryMethod || 'company',
+      companyDeliveryType: completeOrder.companyDeliveryType || 'standard',
+      deliveryFee: completeOrder.deliveryFee || 2,
       groupId: resolvedMember.groupId || 'group_general',
       role: resolvedMember.role || 'កូនក្រុម',
       tubes: Number(tubes || 0),
@@ -891,13 +901,13 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         // 2. Update Database 2 (team_units_records)
         const qRecord = query(collection(dbTeamUnits, 'team_units_records'), where('orderId', '==', orderId));
         const recSnap = await getDocs(qRecord);
-        recSnap.forEach(async (d) => {
+        for (const d of recSnap.docs) {
           await setDoc(d.ref, { paymentStatus: newStatus }, { merge: true });
           if (!updatedOrder) {
             updatedOrder = d.data();
             updatedOrder.paymentStatus = newStatus;
           }
-        });
+        }
 
         bot.answerCallbackQuery(queryMsg.id, {
           text: newStatus === 'paid' ? '✅ ប្ដូរទៅ: បានទូទាត់' : '✅ ប្ដូរទៅ: មិនទាន់ទូទាត់',
