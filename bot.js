@@ -17,7 +17,8 @@ const https = require('https');
 const { parseOrderText, buildCompleteOrder, getKhmerToday, isSingEuLeader } = require('./parser');
 
 // ----------------------------------------------------
-// Firebase Database 1: Order Management (seth-3aa05)
+// Database 1: Order Management (seth-3aa05)
+// ⚠️ EXCLUSIVELY FOR TEAM SING EU ONLY!
 // ----------------------------------------------------
 const firebaseConfigOrderDb = {
   apiKey: "AIzaSyDzUauBrOR3w6Q58PXX0S_1ceid0NBi2sU",
@@ -34,7 +35,8 @@ const orderApp = getApps().some((a) => a.name === '[DEFAULT]')
 const dbOrders = getFirestore(orderApp);
 
 // ----------------------------------------------------
-// Firebase Database 2: Team Units Tracker (team-units-db)
+// Database 2: Team Units Tracker (team-units-db)
+// 🌐 FOR ALL TEAMS (Team Sing Eu + All other Teams!)
 // ----------------------------------------------------
 const firebaseConfigTeamUnits = {
   apiKey: "AIzaSyDNL3lKs1Aat-T0_C6tagfGbYuPvH4UDp4",
@@ -83,26 +85,6 @@ function getPaymentInlineKeyboard(orderId, currentStatus) {
   ];
 }
 
-// Levenshtein distance for fuzzy Khmer typo detection
-function levenshteinDistance(a, b) {
-  const matrix = [];
-  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          Math.min(matrix[i][j - 1] + 1, matrix[i - 1][j] + 1)
-        );
-      }
-    }
-  }
-  return matrix[b.length][a.length];
-}
-
 function normalizeKhmer(str) {
   if (!str) return '';
   return str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
@@ -126,8 +108,25 @@ function sanitizeForFirestore(obj) {
   return obj;
 }
 
+// Check if a member or team belongs to Team Sing Eu
+function isSingEuMemberOrTeam(name = '', groupName = '') {
+  const norm = normalizeKhmer(`${name} ${groupName}`);
+  return (
+    norm.includes('ស៊ីង') ||
+    norm.includes('សុីង') ||
+    norm.includes('ស៊ឹង') ||
+    norm.includes('សុឺង') ||
+    norm.includes('ស្រីកា') ||
+    norm.includes('កា') ||
+    norm.includes('ពន្លក') ||
+    norm.includes('ស្រីនួ') ||
+    norm.includes('នួ') ||
+    norm.includes('ញ៉ាញ់')
+  );
+}
+
 // ----------------------------------------------------
-// Global Team Units Hierarchy Management
+// Global Team Units Hierarchy Management (Database 2)
 // ----------------------------------------------------
 let cachedTeamGroups = [];
 
@@ -151,8 +150,8 @@ async function loadTeamUnitsGroups() {
 loadTeamUnitsGroups();
 
 /**
- * Resolves a seller name to its exact Team Group and Role in App 3 (team-units-db).
- * If unknown, registers a new Team Group so the seller immediately appears in App 3!
+ * Resolves a seller name to its exact Team Group and Role in App 2 (team-units-db).
+ * If unknown, registers a new Team Group so the seller immediately appears in App 2!
  */
 async function resolveTeamMember(rawName) {
   await loadTeamUnitsGroups();
@@ -296,7 +295,7 @@ async function resolveTeamMember(rawName) {
 }
 
 /**
- * Saves unit numbers (tubes and cans) directly to team_units_records in App 3 (team-units-db)
+ * Saves unit numbers (tubes and cans) directly to team_units_records in App 2 (team-units-db)
  */
 async function syncToTeamUnitsDb({ completeOrder, resolvedMember, tubes, cans }) {
   try {
@@ -305,6 +304,10 @@ async function syncToTeamUnitsDb({ completeOrder, resolvedMember, tubes, cans })
       id: recordId,
       orderId: completeOrder.id,
       date: completeOrder.date,
+      customerPhone: completeOrder.customerPhone || '',
+      destination: completeOrder.destination || '',
+      price: completeOrder.price || 0,
+      paymentStatus: completeOrder.paymentStatus || 'unpaid',
       sellerName: resolvedMember.sellerName || completeOrder.sellerName,
       groupId: resolvedMember.groupId || 'group_general',
       role: resolvedMember.role || 'កូនក្រុម',
@@ -315,7 +318,7 @@ async function syncToTeamUnitsDb({ completeOrder, resolvedMember, tubes, cans })
     };
 
     await setDoc(doc(dbTeamUnits, 'team_units_records', unitRecord.id), unitRecord);
-    console.log(`[Team Units Sync ✅] Record #${unitRecord.id} saved for ${unitRecord.sellerName} (${unitRecord.tubes} ទីប + ${unitRecord.cans} កំប៉ុង) on ${unitRecord.date}`);
+    console.log(`[Database 2 Sync ✅] Record #${unitRecord.id} saved for ${unitRecord.sellerName} (${unitRecord.tubes} ទីប + ${unitRecord.cans} កំប៉ុង) on ${unitRecord.date}`);
     return unitRecord;
   } catch (err) {
     console.error('Error syncing to team units db:', err.message);
@@ -386,26 +389,24 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
     }
   }
 
+  // Duplicate Check across both Database 1 and Database 2
   async function checkDuplicateOrder({ customerPhone, destination, provinceId, date }) {
     if (!customerPhone || !date) return null;
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    const normNewDest = (destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
+
+    // 1. Check Database 1 (dbOrders)
     try {
-      const cleanPhone = customerPhone.replace(/\D/g, '');
-      const q = query(collection(dbOrders, ordersCol), where('date', '==', date));
-      const snap = await getDocs(q);
-      if (snap.empty) return null;
-
-      const normNewDest = (destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
-
-      for (const docSnap of snap.docs) {
+      const q1 = query(collection(dbOrders, ordersCol), where('date', '==', date));
+      const snap1 = await getDocs(q1);
+      for (const docSnap of snap1.docs) {
         const existing = docSnap.data();
         const existPhone = (existing.customerPhone || '').replace(/\D/g, '');
-
         const phoneMatches = existPhone && cleanPhone && (
           existPhone === cleanPhone ||
           existPhone.endsWith(cleanPhone) ||
           cleanPhone.endsWith(existPhone)
         );
-
         if (phoneMatches) {
           const provMatch = existing.provinceId && provinceId && existing.provinceId === provinceId;
           const normExistDest = (existing.destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
@@ -413,40 +414,45 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
             normNewDest.includes(normExistDest) ||
             normExistDest.includes(normNewDest)
           );
-
           if (provMatch || destMatch) {
             return { id: docSnap.id, ...existing };
           }
         }
       }
     } catch (err) {
-      console.error(`[${shopName}] Error checking duplicate order:`, err.message);
+      console.error(`[${shopName}] Error checking duplicate in dbOrders:`, err.message);
     }
+
+    // 2. Check Database 2 (dbTeamUnits)
+    try {
+      const q2 = query(collection(dbTeamUnits, 'team_units_records'), where('date', '==', date));
+      const snap2 = await getDocs(q2);
+      for (const docSnap of snap2.docs) {
+        const existing = docSnap.data();
+        const existPhone = (existing.customerPhone || '').replace(/\D/g, '');
+        if (existPhone && cleanPhone && (existPhone === cleanPhone || existPhone.endsWith(cleanPhone) || cleanPhone.endsWith(existPhone))) {
+          return { id: docSnap.id, ...existing };
+        }
+      }
+    } catch (err) {
+      console.error(`[${shopName}] Error checking duplicate in dbTeamUnits:`, err.message);
+    }
+
     return null;
   }
 
   // COMMAND: /start or /help
   bot.onText(/\/(start|help)(@\w+)?/i, (msg) => {
     const chatId = msg.chat.id;
-    const helpText = `👋 ជំរាបសួរ! ខ្ញុំជា Bot សម្រាប់កត់ត្រាទិន្នន័យលក់ចូលក្នុង App "${appTitle}"។
+    const helpText = `👋 ជំរាបសួរ! ខ្ញុំជា Bot សម្រាប់កត់ត្រាទិន្នន័យលក់។
 
-📝 របៀបប្រើប្រាស់៖
-គ្រាន់តែបោះទិន្នន័យតាមទម្រង់ធម្មតា ចូលក្នុងឆាតនេះ (ឬក្នុងគ្រុប)៖
-
-💜 ទីតាំង: ទីរួមខេត្តកំពង់ឆ្នាំង
-💜 អ្នកប្រឹក្សា: 0974854212
-💜 អ្នកទទួល: 0976906600
-💜 ចំនួន: គ្រីម 3
-💜 តម្លៃ: 120000រៀល
-💜 ដាក់តាម : វីរៈប៊ុនថាំ COD
-💜 អ្នកលក់ : ស៊ីង អឺ
-💜 ថ្នាក់ដឹកនាំ : ឡា ធីតា
-💜 Date: 5/11/2026
+📝 គោលការណ៍កត់ត្រាទិន្នន័យ៖
+1️⃣ **Database 1 (seth-3aa05):** កត់ត្រាសម្រាប់តែ **Team ស៊ីង អ៊ី** ប៉ុណ្ណោះ!
+2️⃣ **Database 2 (team-units-db):** កត់ត្រាសម្រាប់ **គ្រប់ក្រុមទាំងអស់** (Team ស៊ីង អ៊ី + ក្រុមដទៃ)!
 
 📌 ដំណើរការឆ្លាតវៃ (Smart Sync)៖
-- សម្រាប់ Team ស៊ីង អ៊ី: Bot នឹងបង្ហាញប៊ូតុងឈ្មោះកូនក្រុមឱ្យចុចរើសភ្លាមៗ!
-- សម្រាប់ Team ផ្សេងទៀត (ឧ. ឡា បុប្ផា, ហ៊ុន ចាន់ធី...): Bot នឹងកត់ត្រាស្វ័យប្រវត្តិតាមឈ្មោះអ្នកលក់ដែលមានក្នុងសារ!
-- ទិន្នន័យ (ទីប + កំប៉ុង) នឹងចូលទៅក្នុង «តារាងប្រចាំខែ» និង Dashboard ដោយស្វ័យប្រវត្តិ!`;
+- សម្រាប់ Team ស៊ីង អ៊ី: Bot នឹងបង្ហាញប៊ូតុងឈ្មោះកូនក្រុមឱ្យចុចរើសភ្លាមៗ ហើយរក្សាទុកទាំងក្នុង Database 1 និង Database 2។
+- សម្រាប់ Team ផ្សេងទៀត (ឧ. ឡា បុប្ផា, ហ៊ុន ចាន់ធី...): Bot នឹងកត់ត្រាស្វ័យប្រវត្តិចូល **Database 2 តែមួយប៉ុណ្ណោះ** មិនច្រឡំចូល Database 1 ឡើយ!`;
 
     bot.sendMessage(chatId, helpText);
   });
@@ -459,7 +465,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       return bot.sendMessage(chatId, '📭 មិនទាន់មានក្រុមអ្នកលក់ក្នុងបញ្ជីនៅឡើយទេ។');
     }
 
-    let text = `👥 បញ្ជីក្រុម និងអ្នកលក់ (${shopName})៖\n\n`;
+    let text = `👥 បញ្ជីក្រុម និងអ្នកលក់ (Database 2)៖\n\n`;
     cachedTeamGroups.forEach((grp, idx) => {
       text += `🏢 ${idx + 1}. ${grp.name} (មេក្រុម: ${grp.leaderName})\n`;
       (grp.members || []).forEach((mem) => {
@@ -501,7 +507,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         }
       });
 
-      const msgText = `📊 របាយការណ៍លក់ថ្ងៃនេះ (${today}) [${shopName}]៖
+      const msgText = `📊 របាយការណ៍លក់ថ្ងៃនេះ (${today}) [Team ស៊ីង អ៊ី - Database 1]៖
 ----------------------------------
 📦 ចំនួនកុម្ម៉ង់សរុប: ${snap.size} កុម្ម៉ង់
 🧪 ចំនួនទីបសរុប: ${totalTubes} ទីប
@@ -510,7 +516,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 💵 ចំណូលសរុប: $${totalRevenue.toFixed(2)}
 💰 ចំណេញសុទ្ធ: $${totalProfit.toFixed(2)}
 ----------------------------------
-ទិន្នន័យបាន Sync ជាមួយ ${appTitle} ផ្ទាល់!`;
+ទិន្នន័យបាន Sync ជាមួយ App Boost Tracker ផ្ទាល់!`;
 
       bot.sendMessage(chatId, msgText);
     } catch (e) {
@@ -554,11 +560,10 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 📞 លេខភ្ញៀវ: ${duplicate.customerPhone}
 📍 ទីតាំង: ${duplicate.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
 📅 កាលបរិច្ឆេទ: ${duplicate.date}
-🔖 លេខកុម្ម៉ង់ដែលមានស្រាប់: #${duplicate.orderNumber || ''}
 👨‍💼 អ្នកលក់: ${duplicate.sellerName || 'N/A'}
-🛍️ ឈុត: ${duplicate.packageId ? (duplicate.tubes + ' ទីប ($' + duplicate.price + ')') : 'ឈុតទំនិញ'}
+🛍️ ឈុត: ${duplicate.tubes || parsed.pkg.tubes} ទីប
 -----------------------------------------
-👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនចូលក្នុង ${appTitle} ឡើងវិញឡើយ!`;
+👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
 
         return bot.sendMessage(chatId, dupMsg, {
           reply_to_message_id: msg.message_id,
@@ -570,8 +575,10 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       await loadSellersFromDb();
 
       // ====================================================
-      // CASE 1: OTHER TEAM SELLER DETECTED (AUTO-RECORD)
+      // CASE 1: OTHER TEAMS DETECTED (AUTO-RECORD)
       // e.g. ឡា បុប្ផា, ហ៊ុន ចាន់ធី, Bopha... (NOT Team Sing Eu)
+      // ⚠️ RULE: RECORD ONLY INTO DATABASE 2 (team-units-db)!
+      // DO NOT WRITE INTO DATABASE 1!
       // ====================================================
       if (!parsed.isSingEuTeam && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
         const resolved = await resolveTeamMember(parsed.sellerName);
@@ -586,10 +593,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         completeOrder.sellerName = resolved.sellerName;
         completeOrder.teamLeader = resolved.groupName;
 
-        // 1. Save to Orders Database
-        await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
-
-        // 2. Sync to Team Units Database
+        // 🌟 ONLY SAVE TO DATABASE 2 (team-units-db) as instructed by user!
         await syncToTeamUnitsDb({
           completeOrder,
           resolvedMember: resolved,
@@ -627,13 +631,12 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 🏢 ក្រុម: ${resolved.groupName}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
-💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-📲 ទិន្នន័យបានចូលទៅក្នុង App ${appTitle} និង «តារាងប្រចាំខែ» រួចរាល់!
+📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
-        console.log(`[Auto-Order Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
+        console.log(`[Database 2 Only Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
 
         return bot.sendMessage(chatId, successMsg, {
           reply_to_message_id: msg.message_id,
@@ -646,6 +649,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       // ====================================================
       // CASE 2: TEAM SING EU (OR UNKNOWN SELLER)
       // Must prompt buttons with team members so user picks!
+      // Once picked: SAVES TO BOTH DATABASE 1 AND DATABASE 2!
       // ====================================================
       const singEuGroup = cachedTeamGroups.find((g) => g.id === 'group_sing_e') || {
         id: 'group_sing_e',
@@ -802,10 +806,9 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         completeOrder.sellerName = selectedMember.name;
         completeOrder.teamLeader = selectedMember.groupName || 'Team ស៊ីង អ៊ី';
 
-        // 1. Save to Orders Database
+        // 🌟 RULE: Team Sing Eu is saved to Database 1 (Orders) AND Database 2 (Team Units)!
         await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
 
-        // 2. Sync to Team Units Database
         await syncToTeamUnitsDb({
           completeOrder,
           resolvedMember: selectedMember,
@@ -846,7 +849,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-📲 ទិន្នន័យបានចូលទៅក្នុង App ${appTitle} និង «តារាងប្រចាំខែ» រួចរាល់!
+📲 ទិន្នន័យបានចូល Database 1 (App Boost) និង Database 2 (App Team Units) រួចរាល់!
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
         bot.editMessageText(successMsg, {
@@ -857,7 +860,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
           },
         });
 
-        console.log(`[Order Saved] #${orderNumber} for seller: ${completeOrder.sellerName} (${selectedMember.groupName})`);
+        console.log(`[Dual DB Saved] #${orderNumber} for seller: ${completeOrder.sellerName} (${selectedMember.groupName})`);
       } catch (err) {
         console.error(`[${shopName}] Error saving order from callback:`, err);
         bot.editMessageText(`❌ មានបញ្ហាក្នុងការរក្សាទុក៖ ${err.message}`, {
@@ -874,58 +877,64 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       const newStatus = parts[2] === 'paid' ? 'paid' : 'unpaid';
 
       try {
+        let updatedOrder = null;
+
+        // 1. Try to update Database 1 (if exists)
         const orderRef = doc(dbOrders, ordersCol, orderId);
         const orderSnap = await getDoc(orderRef);
-        if (!orderSnap.exists()) {
-          return bot.answerCallbackQuery(queryMsg.id, {
-            text: 'រកមិនឃើញការកុម្ម៉ង់នេះទេ!',
-            show_alert: true,
-          });
+        if (orderSnap.exists()) {
+          await setDoc(orderRef, { paymentStatus: newStatus }, { merge: true });
+          updatedOrder = orderSnap.data();
+          updatedOrder.paymentStatus = newStatus;
         }
 
-        await setDoc(orderRef, { paymentStatus: newStatus }, { merge: true });
-
-        const updatedOrder = orderSnap.data();
-        updatedOrder.paymentStatus = newStatus;
+        // 2. Update Database 2 (team_units_records)
+        const qRecord = query(collection(dbTeamUnits, 'team_units_records'), where('orderId', '==', orderId));
+        const recSnap = await getDocs(qRecord);
+        recSnap.forEach(async (d) => {
+          await setDoc(d.ref, { paymentStatus: newStatus }, { merge: true });
+          if (!updatedOrder) {
+            updatedOrder = d.data();
+            updatedOrder.paymentStatus = newStatus;
+          }
+        });
 
         bot.answerCallbackQuery(queryMsg.id, {
           text: newStatus === 'paid' ? '✅ ប្ដូរទៅ: បានទូទាត់' : '✅ ប្ដូរទៅ: មិនទាន់ទូទាត់',
         });
 
         const payBadge = newStatus === 'paid'
-          ? `🟢 បានទូទាត់ ($${updatedOrder.price || 0})`
-          : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price || 0})`;
+          ? `🟢 បានទូទាត់ ($${updatedOrder ? updatedOrder.price : 0})`
+          : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder ? updatedOrder.price : 0})`;
 
-        const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
-          ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
-          : updatedOrder.companyDeliveryType === 'jt'
-          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2.5})`
-          : updatedOrder.companyDeliveryType === 'cod'
-          ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
-          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+        const deliveryTypeBadge = updatedOrder?.deliveryMethod === 'moto'
+          ? `ម៉ូតូ ($${updatedOrder?.deliveryFee || 2})`
+          : updatedOrder?.companyDeliveryType === 'jt'
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder?.deliveryFee || 2.5})`
+          : updatedOrder?.companyDeliveryType === 'cod'
+          ? `ក្រុមហ៊ុន COD ($${updatedOrder?.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder?.deliveryFee || 2})`;
 
-        const pkgTitle = updatedOrder.packageId === 'combo_1_1'
+        const pkgTitle = updatedOrder?.packageId === 'combo_1_1'
           ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${updatedOrder.tubes || 3} ទីប`;
+          : `ឈុត ${updatedOrder?.tubes || 3} ទីប`;
 
-        const unitsDetail = (updatedOrder.cans || 0) > 0
-          ? `${updatedOrder.tubes || 0} ទីប + ${updatedOrder.cans} កំប៉ុង`
-          : `${updatedOrder.tubes || 0} ទីប`;
+        const unitsDetail = (updatedOrder?.cans || 0) > 0
+          ? `${updatedOrder?.tubes || 0} ទីប + ${updatedOrder?.cans} កំប៉ុង`
+          : `${updatedOrder?.tubes || 0} ទីប`;
 
-        const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''}) [${shopName}]
+        const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! [${shopName}]
 -----------------------------------------
-📞 ភ្ញៀវ: ${updatedOrder.customerPhone}
-📍 ទីតាំង: ${updatedOrder.destination}
-🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
+📞 ភ្ញៀវ: ${updatedOrder?.customerPhone || 'N/A'}
+📍 ទីតាំង: ${updatedOrder?.destination || 'N/A'}
+🛍️ ឈុត: ${pkgTitle} ($${updatedOrder?.price || 0})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${updatedOrder.sellerName}
-🏢 ក្រុម: ${updatedOrder.teamLeader || 'Team ស៊ីង អ៊ី'}
+👨‍💼 អ្នកលក់: ${updatedOrder?.sellerName || 'N/A'}
+🏢 ក្រុម: ${updatedOrder?.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
-💰 ចំណេញសុទ្ធ: $${Number(updatedOrder.orderProfit || 0).toFixed(2)}
-📅 កាលបរិច្ឆេទ: ${updatedOrder.date}
+📅 កាលបរិច្ឆេទ: ${updatedOrder?.date || ''}
 -----------------------------------------
-📲 ទិន្នន័យបានចូលទៅក្នុង App ${appTitle} និង «តារាងប្រចាំខែ» រួចរាល់!
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
         bot.editMessageText(updatedSuccessMsg, {
