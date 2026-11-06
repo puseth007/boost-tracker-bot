@@ -127,6 +127,61 @@ function normalizeKhmer(str) {
   return str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
 }
 
+/**
+ * Phonetic normalization for Khmer names:
+ * Strips zero-width chars, spaces, and optional diacritics (៉, ៊, ់, ៍, ៏, ៌).
+ * Normalizes similar vowels:
+ * ែ -> េ, ី -> ិ, ឺ -> ឹ, ូ -> ុ
+ */
+function khmerPhoneticNormalize(str) {
+  if (!str) return '';
+  let s = str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  s = s.replace(/[\u17C9\u17CA\u17CB\u17CD\u17CE\u17CF]/g, '');
+  s = s.replace(/\u17C2/g, '\u17C1'); // ែ -> េ
+  s = s.replace(/\u17B8/g, '\u17B7'); // ី -> ិ
+  s = s.replace(/\u17BA/g, '\u17B9'); // ឺ -> ឹ
+  s = s.replace(/\u17BC/g, '\u17BB'); // ូ -> ុ
+  return s;
+}
+
+function levenshteinDistance(a, b) {
+  const an = a ? a.length : 0;
+  const bn = b ? b.length : 0;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix = Array.from({ length: bn + 1 }, () => new Array(an + 1).fill(0));
+  for (let i = 0; i <= an; ++i) matrix[0][i] = i;
+  for (let i = 0; i <= bn; ++i) matrix[i][0] = i;
+  for (let i = 1; i <= bn; ++i) {
+    for (let j = 1; j <= an; ++j) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[bn][an];
+}
+
+function calculateKhmerSimilarity(strA, strB) {
+  const pA = khmerPhoneticNormalize(strA);
+  const pB = khmerPhoneticNormalize(strB);
+  if (!pA || !pB) return 0;
+  if (pA === pB) return 1.0;
+  // Substring / suffix / prefix matching (e.g. only suffix 'សុម៉ាលីតា' in 'ផល សុម៉ាលីតា')
+  if (pA.length >= 2 && pB.includes(pA)) return 0.95;
+  if (pB.length >= 2 && pA.includes(pB)) return 0.95;
+
+  const maxLen = Math.max(pA.length, pB.length);
+  const dist = levenshteinDistance(pA, pB);
+  return (maxLen - dist) / maxLen;
+}
+
 function sanitizeForFirestore(obj) {
   if (typeof obj === 'string') {
     const wellFormed = obj.toWellFormed ? obj.toWellFormed() : obj;
@@ -277,18 +332,45 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  // 2. Search dynamically across existing cached groups
-  for (const grp of cachedTeamGroups) {
-    if (normalizeKhmer(grp.leaderName) === norm || normalizeKhmer(grp.leaderName).includes(norm) || norm.includes(normalizeKhmer(grp.leaderName))) {
-      return {
-        sellerName: grp.leaderName,
-        groupId: grp.id,
-        groupName: grp.name,
-        role: grp.leaderRole || 'មេក្រុម',
-      };
+  // 2. Smart Search across existing cached groups (Exact -> Phonetic -> Suffix/Substring -> Fuzzy >= 80%)
+  let bestCandidate = null;
+  let highestScore = 0;
+
+  // Prioritize active teams over unassigned group
+  const sortedGroups = [...cachedTeamGroups].sort((a, b) => {
+    const aUn = a.id === 'group_unassigned' || (a.name || '').includes('មិនទាន់មានក្រុម') ? 1 : 0;
+    const bUn = b.id === 'group_unassigned' || (b.name || '').includes('មិនទាន់មានក្រុម') ? 1 : 0;
+    return aUn - bUn;
+  });
+
+  for (const grp of sortedGroups) {
+    // Check leader
+    if (grp.leaderName) {
+      if (normalizeKhmer(grp.leaderName) === norm) {
+        return {
+          sellerName: grp.leaderName,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: grp.leaderRole || 'មេក្រុម',
+        };
+      }
+      const score = calculateKhmerSimilarity(trimmed, grp.leaderName);
+      if (score > highestScore) {
+        highestScore = score;
+        bestCandidate = {
+          sellerName: grp.leaderName,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: grp.leaderRole || 'មេក្រុម',
+          isUnassigned: grp.id === 'group_unassigned',
+        };
+      }
     }
+
+    // Check members
     for (const mem of (grp.members || [])) {
-      if (normalizeKhmer(mem.name) === norm || normalizeKhmer(mem.name).includes(norm) || norm.includes(normalizeKhmer(mem.name))) {
+      if (!mem.name) continue;
+      if (normalizeKhmer(mem.name) === norm) {
         return {
           sellerName: mem.name,
           groupId: grp.id,
@@ -296,7 +378,30 @@ async function resolveTeamMember(rawName) {
           role: mem.role || 'កូនក្រុម',
         };
       }
+      const score = calculateKhmerSimilarity(trimmed, mem.name);
+      if (score > highestScore) {
+        highestScore = score;
+        bestCandidate = {
+          sellerName: mem.name,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: mem.role || 'កូនក្រុម',
+          isUnassigned: grp.id === 'group_unassigned',
+        };
+      }
     }
+  }
+
+  // If highest similarity is >= 80% (phonetic match, typo, suffix/substring match)
+  if (bestCandidate && highestScore >= 0.80) {
+    console.log(`[Khmer Smart Match] Matched "${trimmed}" -> "${bestCandidate.sellerName}" in "${bestCandidate.groupName}" (Score: ${(highestScore * 100).toFixed(0)}%)`);
+    return {
+      sellerName: bestCandidate.sellerName,
+      groupId: bestCandidate.groupId,
+      groupName: bestCandidate.groupName,
+      role: bestCandidate.role,
+      isUnassigned: bestCandidate.isUnassigned,
+    };
   }
 
   // 3. Unknown / New seller (Option 3 requested by user):
@@ -315,7 +420,9 @@ async function resolveTeamMember(rawName) {
       };
       cachedTeamGroups.push(unassignedGrp);
     } else {
-      const alreadyInList = (unassignedGrp.members || []).some((m) => normalizeKhmer(m.name) === norm);
+      const alreadyInList = (unassignedGrp.members || []).some((m) =>
+        normalizeKhmer(m.name) === norm || calculateKhmerSimilarity(m.name, cleanName) >= 0.85
+      );
       if (!alreadyInList) {
         if (!unassignedGrp.members) unassignedGrp.members = [];
         unassignedGrp.members.push({ id: `m_${Date.now()}`, name: cleanName, role: 'កូនក្រុម' });
