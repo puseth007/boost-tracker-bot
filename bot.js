@@ -168,17 +168,47 @@ function levenshteinDistance(a, b) {
   return matrix[bn][an];
 }
 
-function calculateKhmerSimilarity(strA, strB) {
-  const pA = khmerPhoneticNormalize(strA);
-  const pB = khmerPhoneticNormalize(strB);
-  if (!pA || !pB) return 0;
-  if (pA === pB) return 1.0;
-  // Substring / suffix / prefix matching (e.g. only suffix 'សុម៉ាលីតា' in 'ផល សុម៉ាលីតា')
-  if (pA.length >= 2 && pB.includes(pA)) return 0.95;
-  if (pB.length >= 2 && pA.includes(pB)) return 0.95;
+function calculateKhmerSimilarity(inputName, targetName) {
+  const pInput = khmerPhoneticNormalize(inputName);
+  const pTarget = khmerPhoneticNormalize(targetName);
+  if (!pInput || !pTarget) return 0;
 
-  const maxLen = Math.max(pA.length, pB.length);
-  const dist = levenshteinDistance(pA, pB);
+  // 1. Exact phonetic match of full name
+  if (pInput === pTarget) return 1.0;
+
+  // Split targetName into words (e.g. ['ផល', 'សុម៉ាលីតា'])
+  const targetWords = (targetName || '').trim().split(/\s+/).filter(Boolean);
+
+  if (targetWords.length >= 2) {
+    const givenName = targetWords[targetWords.length - 1]; // last word / suffix (ឈ្មោះខ្លួន)
+    const pGiven = khmerPhoneticNormalize(givenName);
+
+    // Check if input matches the given name (suffix) phonetically
+    if (pInput === pGiven) return 0.98;
+
+    // Check if input is a typo of given name (Levenshtein similarity to given name)
+    const distGiven = levenshteinDistance(pInput, pGiven);
+    const maxLenGiven = Math.max(pInput.length, pGiven.length);
+    const simGiven = (maxLenGiven - distGiven) / maxLenGiven;
+    if (simGiven >= 0.80) return simGiven * 0.95; // e.g. 'រាឈិត' vs 'រ៉ាឈីត'
+
+    // Check if target ends with input (suffix)
+    if (pInput.length >= 3 && pTarget.endsWith(pInput)) {
+      return 0.95;
+    }
+
+    // IMPORTANT: Exclude prefix / family name (ក្បាលមុខ ដូចជា 'ផល', 'ម៉េត', 'ឆេង')!
+    // Multiple people share the same family name, so matching prefix-only is disabled.
+    const familyName = targetWords[0];
+    const pFamily = khmerPhoneticNormalize(familyName);
+    if (pInput === pFamily || pTarget.startsWith(pInput)) {
+      return 0;
+    }
+  }
+
+  // 2. Full-name fuzzy similarity (Levenshtein)
+  const maxLen = Math.max(pInput.length, pTarget.length);
+  const dist = levenshteinDistance(pInput, pTarget);
   return (maxLen - dist) / maxLen;
 }
 
