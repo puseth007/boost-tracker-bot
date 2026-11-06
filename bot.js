@@ -6,6 +6,7 @@ const {
   collection,
   doc,
   setDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
@@ -80,6 +81,42 @@ function getPaymentInlineKeyboard(orderId, currentStatus) {
       {
         text: !isPaid ? '✅ 🟠 មិនទាន់ទូទាត់' : '🟠 មិនទាន់ទូទាត់',
         callback_data: `tgpay:${orderId}:unpaid`,
+      },
+    ],
+  ];
+}
+
+// Helper to generate the Confirm / Cancel buttons for App 2 (All teams outside Sing Eu)
+function getApp2ConfirmInlineKeyboard(orderId, status = 'pending') {
+  if (status === 'confirmed') {
+    return [
+      [
+        {
+          text: '✅ បានយល់ព្រមរួចរាល់',
+          callback_data: `app2_action:${orderId}:noop`,
+        },
+      ],
+    ];
+  }
+  if (status === 'cancelled') {
+    return [
+      [
+        {
+          text: '❌ បានបោះបង់រួចរាល់',
+          callback_data: `app2_action:${orderId}:noop`,
+        },
+      ],
+    ];
+  }
+  return [
+    [
+      {
+        text: '❌ បោះបង់',
+        callback_data: `app2_action:${orderId}:cancel`,
+      },
+      {
+        text: '✅ យល់ព្រម',
+        callback_data: `app2_action:${orderId}:confirm`,
       },
     ],
   ];
@@ -675,18 +712,17 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${resolved.role}]
 🏢 ក្រុម: ${resolved.groupName}
 🧪 ចំនួនលក់: ${unitsDetail}
-💳 ស្ថានភាពទូទាត់: ${payBadge}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
 📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!${unassignedNotice}
-👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
+👉 សូមផ្ទៀងផ្ទាត់ការកុម្ម៉ង់ខាងក្រោម៖`;
 
         console.log(`[Database 2 Only Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
 
         return bot.sendMessage(chatId, successMsg, {
           reply_to_message_id: msg.message_id,
           reply_markup: {
-            inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, completeOrder.paymentStatus),
+            inline_keyboard: getApp2ConfirmInlineKeyboard(completeOrder.id),
           },
         });
       }
@@ -957,6 +993,67 @@ ${syncResultFooter}
           chat_id: chatId,
           message_id: messageId,
         });
+      }
+    }
+
+    // App 2 Order Action: Confirm / Cancel (For all teams outside Sing Eu)
+    if (data.startsWith('app2_action:')) {
+      const parts = data.split(':');
+      const orderId = parts[1];
+      const action = parts[2]; // 'confirm' | 'cancel' | 'noop'
+
+      if (action === 'noop') {
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: 'ការកុម្ម៉ង់នេះត្រូវបានរៀបចំរួចរាល់ហើយ!',
+        });
+      }
+
+      if (action === 'confirm') {
+        bot.answerCallbackQuery(queryMsg.id, {
+          text: '✅ បានយល់ព្រមទទួលស្គាល់ការកុម្ម៉ង់នេះ!',
+        });
+
+        return bot.editMessageReplyMarkup(
+          {
+            inline_keyboard: getApp2ConfirmInlineKeyboard(orderId, 'confirmed'),
+          },
+          {
+            chat_id: chatId,
+            message_id: messageId,
+          }
+        );
+      }
+
+      if (action === 'cancel') {
+        try {
+          // Delete record from Database 2 (team_units_records)
+          const qRecord = query(collection(dbTeamUnits, 'team_units_records'), where('orderId', '==', orderId));
+          const recSnap = await getDocs(qRecord);
+          for (const d of recSnap.docs) {
+            await deleteDoc(d.ref);
+          }
+
+          bot.answerCallbackQuery(queryMsg.id, {
+            text: '❌ បានបោះបង់ និងលុបចេញពី App ទី ២ រួចរាល់!',
+          });
+
+          const origText = queryMsg.message.text || '';
+          const cancelledText = `❌ [បានបោះបង់] ការកុម្ម៉ង់នេះត្រូវបានបោះបង់ និងលុបចេញពី App ទី ២ រួចរាល់!\n\n${origText.replace('✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ!', '🚫 ការកុម្ម៉ង់ត្រូវបានបោះបង់')}`;
+
+          return bot.editMessageText(cancelledText, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: getApp2ConfirmInlineKeyboard(orderId, 'cancelled'),
+            },
+          });
+        } catch (err) {
+          console.error(`[App 2 Action] Error cancelling order ${orderId}:`, err);
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: `កំហុសបោះបង់៖ ${err.message}`,
+            show_alert: true,
+          });
+        }
       }
     }
 
