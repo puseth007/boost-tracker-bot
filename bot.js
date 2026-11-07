@@ -845,6 +845,86 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
     const chatId = msg.chat.id;
 
     try {
+    const orderBlocks = splitOrderBlocks(text);
+    if (orderBlocks.length > 1) {
+      console.log(`[Batch Mode] Detected ${orderBlocks.length} orders in single message!`);
+      await bot.sendMessage(chatId, `⏳ កំពុងដំណើរការកត់ត្រា ${orderBlocks.length} កុម្ម៉ង់ក្នុងពេលតែមួយ (Bulk Mode)... សូមរង់ចាំបន្តិច!`, {
+        reply_to_message_id: msg.message_id,
+      });
+
+      await loadTeamUnitsGroups();
+      await loadSellersFromDb();
+
+      let successCount = 0;
+      let dupCount = 0;
+      let totalTubes = 0;
+      let totalRevenue = 0;
+      const summaryItems = [];
+
+      for (let i = 0; i < orderBlocks.length; i++) {
+        const block = orderBlocks[i];
+        const parsed = parseOrderText(block);
+        if (!parsed || !parsed.customerPhone) continue;
+
+        const isSingEu = parsed.isSingEuTeam ||
+          isSingEuLeader(parsed.sellerName) ||
+          isSingEuLeader(parsed.sellerRaw) ||
+          isSingEuMemberOrTeam(parsed.sellerName, parsed.teamLeader);
+
+        const dupDb2 = await checkExistsInDb2({
+          customerPhone: parsed.customerPhone,
+          date: parsed.date,
+        });
+
+        if (dupDb2) {
+          dupCount++;
+          summaryItems.push(`⚠️ ${i + 1}. 📞 ${parsed.customerPhone} (ស្ទួន - បានកត់រួចហើយ)`);
+          continue;
+        }
+
+        const resolved = await resolveTeamMember(parsed.sellerName, parsed.teamLeader || parsed.teamLeaderRaw);
+        const orderNumber = await getNextOrderNumber(true);
+        const completeOrder = buildCompleteOrder({
+          parsed,
+          orderNumber,
+          sellerRole: resolved.role === 'មេក្រុម' ? 'seller' : 'seller',
+          paymentStatus: parsed.paymentStatus || 'unpaid',
+          teamLeader: resolved.groupName,
+        });
+        completeOrder.sellerName = resolved.sellerName;
+        completeOrder.teamLeader = resolved.groupName;
+
+        if (isSingEu) {
+          await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+        }
+        await syncToTeamUnitsDb({
+          completeOrder,
+          resolvedMember: resolved,
+          tubes: completeOrder.tubes,
+          cans: completeOrder.cans,
+        });
+
+        successCount++;
+        totalTubes += completeOrder.tubes || 0;
+        totalRevenue += completeOrder.price || 0;
+
+        summaryItems.push(`✅ ${i + 1}. 📞 ${completeOrder.customerPhone} | 👨‍💼 ${completeOrder.sellerName} (${resolved.groupName}) | 🛍️ ${completeOrder.tubes} ទីប (${completeOrder.price})`);
+      }
+
+      const reportMsg = `🎉 បានកត់ត្រា ${successCount} កុម្ម៉ង់ដោយជោគជ័យក្នុងពេលតែមួយ! [Bulk Batch]
+-----------------------------------------
+📦 កុម្ម៉ង់ទាំងអស់: ${orderBlocks.length} | ជោគជ័យ: ${successCount} | ស្ទួន: ${dupCount}
+🧪 ទីបសរុប: ${totalTubes} ទីប
+💵 តម្លៃសរុប: ${totalRevenue}
+-----------------------------------------
+📋 បញ្ជីកុម្ម៉ង់លម្អិត:
+${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... និង ${summaryItems.length - 35} ទៀត` : ''}
+-----------------------------------------
+📲 ទិន្នន័យទាំងអស់បានចូលក្នុង App ទី ២ រួចរាល់!`;
+
+      return bot.sendMessage(chatId, reportMsg, { reply_to_message_id: msg.message_id });
+    }
+
       const parsed = parseOrderText(text);
       if (!parsed || !parsed.customerPhone) {
         return bot.sendMessage(
