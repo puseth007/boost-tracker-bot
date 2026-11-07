@@ -232,19 +232,34 @@ function sanitizeForFirestore(obj) {
 
 // Check if a member or team belongs to Team Sing Eu
 function isSingEuMemberOrTeam(name = '', groupName = '') {
-  const norm = normalizeKhmer(`${name} ${groupName}`);
-  return (
-    norm.includes('ស៊ីង') ||
-    norm.includes('សុីង') ||
-    norm.includes('ស៊ឹង') ||
-    norm.includes('សុឺង') ||
-    norm.includes('ស្រីកា') ||
-    norm.includes('កា') ||
-    norm.includes('ពន្លក') ||
-    norm.includes('ស្រីនួ') ||
-    norm.includes('នួ') ||
-    norm.includes('ញ៉ាញ់')
-  );
+  // If teamLeader is explicitly specified and belongs to another leader (e.g. ឡា ធីតា, ឡា បុប្ផា, ហ៊ុន ចាន់ធី), it is NOT Team Sing Eu!
+  if (groupName && !isSingEuLeader(groupName)) {
+    return false;
+  }
+  if (groupName && isSingEuLeader(groupName)) {
+    return true;
+  }
+
+  const cleanName = normalizeKhmer(name || '');
+  if (!cleanName) return false;
+  if (isSingEuLeader(cleanName)) return true;
+
+  // Exact or full member patterns (never single syllables like 'នួ' or 'កា')
+  const singEuMemberPatterns = [
+    'ស្រីកា',
+    'ពន្លក', 'ពូពន្លក',
+    'ស្រីនួ',
+    'ញ៉ាញ់', 'ចែញ៉ាញ់', 'ចៃញ៉ាញ់',
+    'ស្រីណុច'
+  ];
+
+  for (const pat of singEuMemberPatterns) {
+    if (cleanName === pat || cleanName.includes(pat)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ----------------------------------------------------
