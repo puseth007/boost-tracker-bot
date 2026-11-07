@@ -111,6 +111,10 @@ function parseKhmerDate(rawStr) {
     let year = partsMatch[3];
     if (year.length === 2) {
       year = '20' + year;
+    } else if (year.length === 3 && year.startsWith('20')) {
+      year = '202' + year.slice(2);
+    } else if (year === '26' || year === '206') {
+      year = '2026';
     }
     return `${year}-${month}-${day}`;
   }
