@@ -140,6 +140,7 @@ function parseOrderText(text) {
   let priceRaw = '';
   let deliveryRaw = '';
   let sellerRaw = '';
+  let teamLeaderRaw = '';
   let dateRaw = '';
 
   for (let i = 0; i < rawLines.length; i++) {
@@ -178,6 +179,10 @@ function parseOrderText(text) {
     else if (/អ្នកលក់/i.test(line)) {
       sellerRaw = cleaned.replace(/^[\s\S]*?អ្នកលក់\s*[:៖]?\s*/i, '').trim();
     }
+    // Team Leader: ថ្នាក់ដឹកនាំ ឬ មេក្រុម
+    else if (/ថ្នាក់ដឹកនាំ|មេក្រុម|team\s*leader/i.test(line)) {
+      teamLeaderRaw = cleaned.replace(/^[\s\S]*?(ថ្នាក់ដឹកនាំ|មេក្រុម|team\s*leader)\s*[:៖]?\s*/i, '').trim();
+    }
     // Date: Date: or កាលបរិច្ឆេទ or Dat:
     else if (/Date|Dat|កាលបរិច្ឆេទ/i.test(line)) {
       dateRaw = cleaned.replace(/^(Date|Dat|កាលបរិច្ឆេទ)\s*[:៖]?\s*/i, '').trim();
@@ -208,11 +213,22 @@ function parseOrderText(text) {
     }
   }
 
+  // Fallback for teamLeaderRaw if not captured via regex
+  if (!teamLeaderRaw && rawLines.length > 0) {
+    for (const line of rawLines) {
+      const cleaned = cleanLineText(line);
+      if (/ថ្នាក់ដឹកនាំ|មេក្រុម/i.test(cleaned)) {
+        teamLeaderRaw = cleaned.replace(/^[\s\S]*?(ថ្នាក់ដឹកនាំ|មេក្រុម)\s*[:៖]?\s*/i, '').trim();
+        break;
+      }
+    }
+  }
+
   // Determine Team & Seller state:
   // For Team Sing Eu: every order has "អ្នកលក់ : ស៊ីង អឺ" because she is team leader.
   // We MUST show buttons so the user can choose the real seller.
   // For other teams (e.g. ឡា បុប្ផា, ហ៊ុន ចាន់ធី): they write their own name directly!
-  const isSingEu = isSingEuLeader(sellerRaw);
+  const isSingEu = isSingEuLeader(sellerRaw) && (!teamLeaderRaw || isSingEuLeader(teamLeaderRaw));
   let resolvedSellerName = '';
   let teamLeader = '';
 
@@ -221,10 +237,10 @@ function parseOrderText(text) {
     teamLeader = 'ស៊ីង អ៊ី';
   } else if (sellerRaw) {
     resolvedSellerName = sellerRaw.trim();
-    teamLeader = sellerRaw.trim();
+    teamLeader = teamLeaderRaw ? teamLeaderRaw.trim() : sellerRaw.trim();
   } else {
     resolvedSellerName = '';
-    teamLeader = 'ស៊ីង អ៊ី';
+    teamLeader = teamLeaderRaw ? teamLeaderRaw.trim() : 'ស៊ីង អ៊ី';
   }
 
   // Match Province
@@ -390,6 +406,7 @@ function parseOrderText(text) {
     sellerName: resolvedSellerName,
     isSingEuTeam: isSingEu,
     teamLeader,
+    teamLeaderRaw,
     date,
     paymentStatus,
     rawText: text,

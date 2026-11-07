@@ -141,6 +141,7 @@ function khmerPhoneticNormalize(str) {
   s = s.replace(/\u17B8/g, '\u17B7'); // ី -> ិ
   s = s.replace(/\u17BA/g, '\u17B9'); // ឺ -> ឹ
   s = s.replace(/\u17BC/g, '\u17BB'); // ូ -> ុ
+  s = s.replace(/ដ/g, 'ត'); // ដ -> ត (ធីដា / ធីតា)
   return s;
 }
 
@@ -290,12 +291,14 @@ loadTeamUnitsGroups();
  * Resolves a seller name to its exact Team Group and Role in App 2 (team-units-db).
  * If unknown, registers a new Team Group so the seller immediately appears in App 2!
  */
-async function resolveTeamMember(rawName) {
+async function resolveTeamMember(rawName, rawLeader = '') {
   await loadTeamUnitsGroups();
   const trimmed = (rawName || '').trim();
   const norm = normalizeKhmer(trimmed);
+  const trimmedLeader = (rawLeader || '').trim();
+  const normLeader = normalizeKhmer(trimmedLeader);
 
-  if (!norm) {
+  if (!norm && !normLeader) {
     return {
       sellerName: 'ស៊ីង អ៊ី',
       groupId: 'group_sing_e',
@@ -304,8 +307,8 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  // 1. Direct aliases & known member maps
-  if (norm.includes('បុប្ផា') || norm.includes('បូប្ផា') || norm.includes('bopha')) {
+  // 1. Direct aliases & known member maps (ONLY exact or specific, NEVER loose substring like includes('នួ')!)
+  if (norm === 'បុប្ផា' || norm === 'ឡាបុប្ផា' || norm === 'បូប្ផា' || norm === 'ឡាបូប្ផា' || norm === 'bopha') {
     const bGrp = cachedTeamGroups.find((g) =>
       normalizeKhmer(g.name).includes('bopha') ||
       normalizeKhmer(g.name).includes('bo pha') ||
@@ -323,7 +326,7 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  if (norm.includes('សៅបេន') || norm.includes('សៅ') || norm.includes('ben')) {
+  if (norm === 'សៅបេន' || norm === 'សៅ បេន' || norm.startsWith('សៅបេន')) {
     return {
       sellerName: 'សៅ បេន',
       groupId: 'group_1793777252222',
@@ -332,7 +335,7 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  if (norm.includes('ស្រីកា') || norm.includes('កា')) {
+  if (norm === 'ស្រីកា' || norm === 'ស្រី កា' || (norm.startsWith('ស្រីកា') && !norm.startsWith('ស្រីកាន'))) {
     return {
       sellerName: 'ស្រី កា',
       groupId: 'group_sing_e',
@@ -341,7 +344,7 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  if (norm.includes('ពន្លក') || norm.includes('ពូពន្លក')) {
+  if (norm === 'ពន្លក' || norm === 'ពូពន្លក' || norm === 'ពូ ពន្លក') {
     return {
       sellerName: 'ពូ ពន្លក',
       groupId: 'group_sing_e',
@@ -350,7 +353,7 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  if (norm.includes('ស្រីនួ') || norm.includes('នួ')) {
+  if (norm === 'ស្រីនួ' || norm === 'ស្រី នួ' || (norm.startsWith('ស្រីនួ') && !norm.startsWith('ស្រីនួន'))) {
     return {
       sellerName: 'ស្រី នួ',
       groupId: 'group_sing_e',
@@ -359,7 +362,7 @@ async function resolveTeamMember(rawName) {
     };
   }
 
-  if (norm.includes('ញ៉ាញ់')) {
+  if (norm === 'ញ៉ាញ់' || norm === 'ចែញ៉ាញ់' || norm === 'ចៃញ៉ាញ់' || norm === 'ចៃ ញ៉ាញ់' || norm === 'ចែ ញ៉ាញ់') {
     return {
       sellerName: 'ចៃ ញ៉ាញ់',
       groupId: 'group_sing_e',
@@ -375,6 +378,92 @@ async function resolveTeamMember(rawName) {
       groupName: 'Team ស៊ីង អ៊ី',
       role: 'មេក្រុម',
     };
+  }
+
+  // 1.5. If a leader is explicitly provided (e.g. ថ្នាក់ដឹកនាំ: ឡា ធីតា), prioritize finding that leader's team!
+  if (trimmedLeader) {
+    let matchedGroup = null;
+    let bestLeaderScore = 0;
+
+    for (const grp of cachedTeamGroups) {
+      if (grp.id === 'group_unassigned') continue;
+      // Compare leaderName
+      if (grp.leaderName) {
+        if (normalizeKhmer(grp.leaderName) === normLeader) {
+          matchedGroup = grp;
+          break;
+        }
+        const score = calculateKhmerSimilarity(trimmedLeader, grp.leaderName);
+        if (score > bestLeaderScore && score >= 0.75) {
+          bestLeaderScore = score;
+          matchedGroup = grp;
+        }
+      }
+      // Also compare grp.name (e.g. "ទី ៨ (ឡា ធីដា)")
+      if (grp.name) {
+        if (normalizeKhmer(grp.name).includes(normLeader)) {
+          matchedGroup = grp;
+          break;
+        }
+        const nameScore = calculateKhmerSimilarity(trimmedLeader, grp.name);
+        if (nameScore > bestLeaderScore && nameScore >= 0.75) {
+          bestLeaderScore = nameScore;
+          matchedGroup = grp;
+        }
+      }
+    }
+
+    if (matchedGroup) {
+      console.log(`[Smart Match] Found Leader's Group for "${trimmedLeader}": "${matchedGroup.name}" (${matchedGroup.id})`);
+
+      // Check if seller matches leader themself
+      if (trimmed && (normalizeKhmer(matchedGroup.leaderName) === norm || calculateKhmerSimilarity(trimmed, matchedGroup.leaderName) >= 0.85)) {
+        return {
+          sellerName: matchedGroup.leaderName,
+          groupId: matchedGroup.id,
+          groupName: matchedGroup.name,
+          role: matchedGroup.leaderRole || 'មេក្រុម',
+        };
+      }
+
+      // Check if seller matches any existing member in this leader's group
+      for (const mem of (matchedGroup.members || [])) {
+        if (normalizeKhmer(mem.name) === norm || calculateKhmerSimilarity(trimmed, mem.name) >= 0.85) {
+          return {
+            sellerName: mem.name,
+            groupId: matchedGroup.id,
+            groupName: matchedGroup.name,
+            role: mem.role || 'កូនក្រុម',
+          };
+        }
+      }
+
+      // Seller is a new member under this leader (e.g. នួន និមល under ឡា ធីតា / ឡា ធីដា)!
+      try {
+        const newMember = {
+          id: `m_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          name: trimmed,
+          role: 'កូនក្រុម',
+        };
+        matchedGroup.members = matchedGroup.members || [];
+        matchedGroup.members.push(newMember);
+
+        await setDoc(
+          doc(dbTeamUnits, 'team_units_metadata', 'groups_hierarchy'),
+          sanitizeForFirestore({ groups: cachedTeamGroups, updatedAt: new Date().toISOString() })
+        );
+        console.log(`[Smart Match] Auto-added new member "${trimmed}" to team "${matchedGroup.name}"!`);
+      } catch (err) {
+        console.error('Failed to auto-add member to group hierarchy:', err.message);
+      }
+
+      return {
+        sellerName: trimmed,
+        groupId: matchedGroup.id,
+        groupName: matchedGroup.name,
+        role: 'កូនក្រុម',
+      };
+    }
   }
 
   // 2. Smart Search across existing cached groups (Exact -> Phonetic -> Suffix/Substring -> Fuzzy >= 80%)
@@ -811,7 +900,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
           });
         }
 
-        const resolved = await resolveTeamMember(parsed.sellerName);
+        const resolved = await resolveTeamMember(parsed.sellerName, parsed.teamLeader || parsed.teamLeaderRaw);
         const orderNumber = await getNextOrderNumber(true);
         const completeOrder = buildCompleteOrder({
           parsed,
