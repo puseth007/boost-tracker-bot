@@ -263,6 +263,28 @@ function isSingEuMemberOrTeam(name = '', groupName = '') {
   return false;
 }
 
+function splitOrderBlocks(text) {
+  if (!text) return [];
+  const lines = text.split('\n');
+  const blocks = [];
+  let currentBlock = [];
+
+  for (const line of lines) {
+    const isHeader = /ទីតាំង/i.test(line);
+    if (isHeader && currentBlock.some(l => /អ្នកទទួល|ចំនួន|តម្លៃ|ទូរស័ព្ទ/i.test(l))) {
+      blocks.push(currentBlock.join('\n'));
+      currentBlock = [line];
+    } else {
+      currentBlock.push(line);
+    }
+  }
+  if (currentBlock.length > 0) {
+    blocks.push(currentBlock.join('\n'));
+  }
+  const valid = blocks.filter(b => /អ្នកទទួល|ទីតាំង/i.test(b));
+  return valid.length > 1 ? valid : [text];
+}
+
 // ----------------------------------------------------
 // Global Team Units Hierarchy Management (Database 2)
 // ----------------------------------------------------
@@ -371,7 +393,7 @@ async function resolveTeamMember(rawName, rawLeader = '') {
     };
   }
 
-  if (isSingEuLeader(trimmed)) {
+  if (isSingEuLeader(trimmed) && (!trimmedLeader || isSingEuLeader(trimmedLeader))) {
     return {
       sellerName: 'ស៊ីង អ៊ី',
       groupId: 'group_sing_e',
