@@ -1,0 +1,14 @@
+{
+  "name": "boost-tracker-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram Bot for Boost & Sales Tracker - automated order entry to Firestore",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "firebase": "^10.14.1",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
