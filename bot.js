@@ -59,7 +59,7 @@ const dbTeamUnits = getFirestore(teamUnitsApp);
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('🚀 Boost & Sales Tracker Multi-Bot Server is Online (Shop 1 & Shop 2) 24/7!');
+  res.end('🚀 Boost & Sales Tracker Multi-Bot Server is Online (Shop 1, Shop 2 & WeCan Bot) 24/7!');
 }).listen(PORT, () => {
   console.log(`📡 Cloud Health Check Server is running on port ${PORT}`);
 });
@@ -1510,3 +1510,14 @@ startBotInstance({
   metadataCol: 'metadata_shop2',
   appTitle: 'Boost Tracker 2',
 });
+
+// ----------------------------------------------------
+// Start Team WeCan Bot (@team_wecan_bot) -> boost-tracker-v2
+// ----------------------------------------------------
+try {
+  const { startWeCanBot } = require('./wecan-bot');
+  startWeCanBot();
+  console.log('🚀 [Team WeCan Bot] Initialized on Cloud!');
+} catch (err) {
+  console.error('❌ Error starting Team WeCan Bot:', err.message);
+}
