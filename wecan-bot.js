@@ -66,6 +66,91 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   ];
 }
 
+// Commission sellers under Team Leader Prak Sothany
+const SOTHANY_COMMISSION_MEMBERS = [
+  'វ៉ា កក្កដា',
+  'សាន់ សូលីដា',
+  'ប្រាក់ សុផាន់ណា',
+  'កៅ យ៉ារីន',
+  'តេង សុវណ្ណារ័ត្ន',
+  'ផល្លី ស្រីណែត',
+  'រ៉េន ស្រីណេត',
+  'សយ ស្រីណេត',
+  'សឿន សារ៉ុម',
+  'សឿន ចាន់',
+  'ព្រុំ វុទ្ធី',
+  'ឃីន ម៉ាលី',
+];
+
+function isLeaderWithCommission(sellerName) {
+  if (!sellerName) return false;
+  const s = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  return s.includes('សុថានី');
+}
+
+function calculateOrderCommission(orderData) {
+  const tubes = Number(orderData.tubes || 0);
+  const cans = Number(orderData.cans || 0);
+  const pkgId = orderData.packageId || '';
+  const prodType = (orderData.productType || '').toLowerCase();
+
+  // Category 2: ឈុតថ្នាំ (កំប៉ុង) + គ្រីម
+  // ថ្នាំ 1 + គ្រីម 1 = $5
+  // ថ្នាំ 2 + គ្រីម 2 = $10
+  // ថ្នាំ 3 + គ្រីម 3 = $15
+  // ថ្នាំ 5 + គ្រីម 5 = $25
+  if ((cans > 0 && tubes > 0) || prodType.includes('ថ្នាំ') || prodType.includes('កំប៉ុង') || pkgId.startsWith('combo_')) {
+    const pairs = cans > 0 && tubes > 0 ? Math.min(cans, tubes) : tubes;
+    if (pairs >= 5) return 25;
+    if (pairs === 3) return 15;
+    if (pairs === 2) return 10;
+    return 5;
+  }
+
+  // Category 1: ឈុតទីប
+  // ឈុត 1 ទីប = 1$
+  // ឈុត 2+1 ទីប (3 ទីប) = 2$
+  // ឈុត 3+3 ទីប (6 ទីប) = 3$
+  // ឈុត 5+5 ទីប (10 ទីប) = 5$
+  if (tubes === 1) return 1;
+  if (tubes === 3 || tubes === 2) return 2; // 2+1 = 3 tubes
+  if (tubes === 6 || tubes === 4 || tubes === 5) return 3; // 3+3 = 6 tubes
+  if (tubes >= 8) return 5; // 5+5 = 10 tubes
+
+  const price = Number(orderData.price || 0);
+  if (price <= 15) return 1;
+  if (price <= 35) return 2;
+  if (price <= 65) return 3;
+  return 5;
+}
+
+function getCommissionMemberKeyboard(orderId) {
+  const rows = [];
+  for (let i = 0; i < SOTHANY_COMMISSION_MEMBERS.length; i += 2) {
+    const row = [];
+    const m1 = SOTHANY_COMMISSION_MEMBERS[i];
+    row.push({
+      text: `👤 ${m1}`,
+      callback_data: `comm:${orderId}:${i}`,
+    });
+    if (i + 1 < SOTHANY_COMMISSION_MEMBERS.length) {
+      const m2 = SOTHANY_COMMISSION_MEMBERS[i + 1];
+      row.push({
+        text: `👤 ${m2}`,
+        callback_data: `comm:${orderId}:${i + 1}`,
+      });
+    }
+    rows.push(row);
+  }
+  rows.push([
+    {
+      text: '👑 មេក្រុមលក់ផ្ទាល់ខ្លួន',
+      callback_data: `comm:${orderId}:self`,
+    },
+  ]);
+  return rows;
+}
+
 function sanitizeForFirestore(obj) {
   if (obj === null || obj === undefined) return null;
   if (typeof obj !== 'object') return obj;
@@ -93,6 +178,19 @@ async function saveOrderToFirestore(completeOrder) {
     teamLeader: completeOrder.teamLeader || 'ឡា ធីតា',
     lastUpdated: new Date().toISOString(),
   }, { merge: true });
+
+  // If this order is sold by a commission seller, also save in their sub-collection
+  if (completeOrder.commissionSeller && completeOrder.commissionSeller !== seller) {
+    const commRef = doc(db, 'seller_orders', completeOrder.commissionSeller, 'orders', completeOrder.id);
+    await setDoc(commRef, cleanOrder, { merge: true });
+
+    const commParentRef = doc(db, 'seller_orders', completeOrder.commissionSeller);
+    await setDoc(commParentRef, {
+      sellerName: completeOrder.commissionSeller,
+      teamLeader: seller,
+      lastUpdated: new Date().toISOString(),
+    }, { merge: true });
+  }
 }
 
 function splitOrderBlocks(text) {
@@ -296,6 +394,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const hasExplicitSeller = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' && parsed.sellerName.trim().length > 0;
 
         if (hasExplicitSeller) {
+          const isLeaderOrder = isLeaderWithCommission(parsed.sellerName);
           const orderNumber = await getNextOrderNumber();
           const completeOrder = buildCompleteOrder({
             parsed,
@@ -304,8 +403,40 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             paymentStatus: parsed.paymentStatus || 'unpaid',
             teamLeader: parsed.teamLeader || 'ឡា ធីតា',
           });
+          completeOrder.sellerName = parsed.sellerName.trim();
+          completeOrder.actualSeller = parsed.sellerName.trim();
+          completeOrder.commissionSeller = null;
+          completeOrder.sellerCommission = 0;
+          completeOrder.isCommissionSale = false;
 
           await saveOrderToFirestore(completeOrder);
+
+          if (isLeaderOrder) {
+            const pkgTitle = completeOrder.packageId === 'combo_1_1'
+              ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
+              : `ឈុត ${completeOrder.tubes} ទីប`;
+
+            const advisorLine = completeOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${completeOrder.advisorPhone}` : '';
+            const productTypeLine = completeOrder.productType ? `\n🏷️ ប្រភេទ: ${completeOrder.productType}` : '';
+
+            const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
+-----------------------------------------
+📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
+📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
+🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
+🏢 ម្ចាស់ Order (មេក្រុម): ${completeOrder.sellerName}
+-----------------------------------------
+👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ៖`;
+
+            console.log(`[WeCan Bot Commission Prompt] #${orderNumber} for leader: ${completeOrder.sellerName}`);
+
+            return bot.sendMessage(chatId, promptMsg, {
+              reply_to_message_id: msg.message_id,
+              reply_markup: {
+                inline_keyboard: getCommissionMemberKeyboard(completeOrder.id),
+              },
+            });
+          }
 
           const payBadge = completeOrder.paymentStatus === 'paid'
             ? `🟢 បានទូទាត់ ($${completeOrder.price})`
@@ -504,6 +635,102 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       return;
     }
 
+    if (data.startsWith('comm:')) {
+      const parts = data.split(':');
+      const orderId = parts[1];
+      const targetIdx = parts[2];
+
+      try {
+        const orderRef = doc(db, 'orders', orderId);
+        const orderSnap = await getDoc(orderRef);
+        if (!orderSnap.exists()) {
+          return bot.answerCallbackQuery(queryMsg.id, { text: 'រកមិនឃើញការកុម្ម៉ង់នេះទេ!', show_alert: true });
+        }
+
+        const orderData = orderSnap.data();
+        let selectedMember = '';
+        let commAmount = 0;
+        let isCommission = false;
+
+        if (targetIdx === 'self') {
+          selectedMember = orderData.sellerName || 'ប្រាក់ សុថានី';
+          commAmount = 0;
+          isCommission = false;
+          await bot.answerCallbackQuery(queryMsg.id, { text: '✅ មេក្រុមលក់ផ្ទាល់ខ្លួន' });
+        } else {
+          const idx = parseInt(targetIdx, 10);
+          selectedMember = SOTHANY_COMMISSION_MEMBERS[idx] || 'កូនក្រុម';
+          commAmount = calculateOrderCommission(orderData);
+          isCommission = true;
+          await bot.answerCallbackQuery(queryMsg.id, { text: `✅ ${selectedMember} (កម្រៃ +$${commAmount})` });
+        }
+
+        const updatedOrder = {
+          ...orderData,
+          actualSeller: selectedMember,
+          commissionSeller: isCommission ? selectedMember : null,
+          sellerCommission: commAmount,
+          isCommissionSale: isCommission,
+          updatedAt: new Date().toISOString(),
+        };
+
+        await saveOrderToFirestore(updatedOrder);
+
+        const payBadge = updatedOrder.paymentStatus === 'paid'
+          ? `🟢 បានទូទាត់ ($${updatedOrder.price})`
+          : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price})`;
+
+        const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
+          ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'jt'
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'cod'
+          ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+
+        const pkgTitle = updatedOrder.packageId === 'combo_1_1'
+          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
+          : `ឈុត ${updatedOrder.tubes} ទីប`;
+
+        const unitsDetail = updatedOrder.cans > 0
+          ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
+          : `${updatedOrder.tubes} ទីប`;
+
+        const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
+        const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
+        const sellerLine = isCommission
+          ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${selectedMember}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${commAmount}.00 💸`
+          : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (លក់ផ្ទាល់ខ្លួន)`;
+
+        const updatedMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
+-----------------------------------------
+📞 ភ្ញៀវ: ${updatedOrder.customerPhone || 'N/A'}${advisorLine}${productTypeLine}
+📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
+🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
+🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
+🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
+🧪 ចំនួនលក់: ${unitsDetail}
+💳 ស្ថានភាពទូទាត់: ${payBadge}
+📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
+-----------------------------------------
+👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
+
+        await bot.editMessageText(updatedMsg, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: getPaymentInlineKeyboard(orderId, updatedOrder.paymentStatus, true),
+          },
+        }).catch(err => {
+          if (!err.message?.includes('message is not modified')) console.error('editMessageText error:', err.message);
+        });
+      } catch (e) {
+        console.error('Error handling commission pick:', e);
+        bot.answerCallbackQuery(queryMsg.id, { text: `កំហុស: ${e.message}`, show_alert: true }).catch(() => {});
+      }
+      return;
+    }
+
     if (data.startsWith('tgpay:')) {
       const parts = data.split(':');
       const orderId = parts[1];
@@ -564,13 +791,16 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
 
+        const sellerLine = updatedOrder.commissionSeller
+          ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`
+          : `\n👨‍💼 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}`;
+
         const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
 📞 ភ្ញៀវ: ${updatedOrder.customerPhone || 'N/A'}${advisorLine}${productTypeLine}
 📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
 🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
-🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}
+🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
 🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
