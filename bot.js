@@ -33,22 +33,22 @@ const { parseOrderText, buildCompleteOrder } = require('./parser');
 // Firebase Configuration (boost-tracker-v2)
 // ----------------------------------------------------
 const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY,
-  authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.FIREBASE_PROJECT_ID,
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.FIREBASE_APP_ID,
-  measurementId: process.env.FIREBASE_MEASUREMENT_ID || ""
+  apiKey: process.env.FIREBASE_API_KEY || "AIzaSyAjAvSMf5KYJoS6kxetAAduISvCuEWHIcI",
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN || "boost-tracker-v2.firebaseapp.com",
+  projectId: process.env.FIREBASE_PROJECT_ID || "boost-tracker-v2",
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "boost-tracker-v2.firebasestorage.app",
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || "420378404136",
+  appId: process.env.FIREBASE_APP_ID || "1:420378404136:web:6a69990efad966d0261c1d",
+  measurementId: process.env.FIREBASE_MEASUREMENT_ID || "G-BYLBH6CZHG"
 };
 
 let db = null;
-if (firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_FIREBASE_API_KEY') {
+try {
   const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
   db = getFirestore(app);
   console.log('✅ Connected to Firebase Firestore (boost-tracker-v2)');
-} else {
-  console.error('❌ Firebase credentials missing in .env!');
+} catch (e) {
+  console.error('❌ Firebase connection error:', e.message);
 }
 
 // ----------------------------------------------------
@@ -112,6 +112,10 @@ function sanitizeForFirestore(obj) {
 
 // Saves order to both global 'orders' and personal folder 'seller_orders/{sellerName}/orders'
 async function saveOrderToFirestore(completeOrder) {
+  if (!db) {
+    console.error('⚠️ Firestore db is not connected. Cannot save order.');
+    return;
+  }
   const cleanOrder = sanitizeForFirestore(completeOrder);
   // 1. Root orders collection
   await setDoc(doc(db, 'orders', completeOrder.id), cleanOrder);
@@ -292,6 +296,22 @@ function updateTeamsState(groups) {
   console.log(`[Bot Sync] Realtime Teams: ${groups.length} groups, ${Object.keys(memberTeamMap).length} members mapped.`);
 }
 
+async function loadMetadata() {
+  if (!db) return;
+  try {
+    const sSnap = await getDoc(doc(db, 'metadata', 'sellers'));
+    if (sSnap.exists() && Array.isArray(sSnap.data().names)) {
+      cachedSellers = sSnap.data().names;
+    }
+    const tSnap = await getDoc(doc(db, 'metadata', 'teams'));
+    if (tSnap.exists() && Array.isArray(tSnap.data().groups)) {
+      updateTeamsState(tSnap.data().groups);
+    }
+  } catch (err) {
+    console.error('Error in loadMetadata:', err.message);
+  }
+}
+
 function listenMetadataRealtime() {
   if (!db) return;
   try {
@@ -356,6 +376,17 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 /report - មើលរបាយការណ៍លក់សរុបថ្ងៃនេះ
 /help - របៀបប្រើប្រាស់`;
   bot.sendMessage(msg.chat.id, helpText);
+});
+
+bot.onText(/\/(ping|test)(@\w+)?/i, (msg) => {
+  const status = `🏓 <b>Pong!</b> @puseth_sales_bot ដំណើរការធម្មតា ២៤/៧!
+
+✅ <b>Firebase Connection:</b> ${db ? 'ភ្ជាប់ជោគជ័យ (Connected)' : 'បរាជ័យ (Not Connected)'}
+👥 <b>អ្នកលក់ក្នុងបញ្ជី:</b> ${cachedSellers.length} នាក់
+🏢 <b>ក្រុមការងារ:</b> ${cachedGroups.length} ក្រុម
+⏰ <b>ម៉ោងដំណើរការ:</b> ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' })}`;
+
+  bot.sendMessage(msg.chat.id, status, { parse_mode: 'HTML' });
 });
 
 bot.onText(/\/sellers(@\w+)?/i, async (msg) => {
@@ -905,3 +936,14 @@ bot.on('callback_query', async (queryMsg) => {
     }
   }
 });
+
+// ----------------------------------------------------
+// Start Team WeCan Bot (@team_wecan_bot) if available
+// ----------------------------------------------------
+try {
+  const { startWeCanBot } = require('./wecan-bot');
+  startWeCanBot();
+  console.log('🚀 [Team WeCan Bot] Initialized on Cloud!');
+} catch (err) {
+  // Gracefully ignored if not present or token not set
+}
