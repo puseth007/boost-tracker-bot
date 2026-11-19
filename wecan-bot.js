@@ -81,9 +81,9 @@ function isLeaderWithCommission(sellerName) {
 
 function formatPackageTitle(order) {
   if (!order) return 'ឈុត';
-  if (order.packageId === 'combo_5_5' || (order.cans === 5 && order.tubes === 5) || order.price === 180) return 'ឈុត ៥ ថ្នាំ + ៥ គ្រីម';
-  if (order.packageId === 'combo_3_3' || (order.cans === 3 && order.tubes === 3) || order.price === 135) return 'ឈុត ៣ ថ្នាំ + ៣ គ្រីម';
-  if (order.packageId === 'combo_2_2' || (order.cans === 2 && order.tubes === 2) || order.price === 90) return 'ឈុត ២ ថ្នាំ + ២ គ្រីម';
+  if (order.packageId === 'combo_5_5' || (order.cans === 5 && order.tubes === 5) || order.price === 180) return 'ឈុត ៥ កំប៉ុង + ៥ គ្រីម';
+  if (order.packageId === 'combo_3_3' || (order.cans === 3 && order.tubes === 3) || order.price === 135) return 'ឈុត ៣ កំប៉ុង + ៣ គ្រីម';
+  if (order.packageId === 'combo_2_2' || (order.cans === 2 && order.tubes === 2) || order.price === 90) return 'ឈុត ២ កំប៉ុង + ២ គ្រីម';
   if (order.packageId === 'combo_1_1' || (order.cans === 1 && order.tubes === 1) || (order.cans > 0 && order.tubes > 0)) return 'ឈុត ១ កំប៉ុង + ១ គ្រីម';
   if (order.tubes === 10) return 'ឈុត ៥ + ៥ ទីប';
   if (order.tubes === 6) return 'ឈុត ៣ + ៣ ទីប';
