@@ -42,30 +42,60 @@ const SELLER_COMMISSION_RATES = {
   cod: { set_1: 0.7, set_3: 1.5, set_6: 2.5, set_10: 4.5, combo_1_1: 2.5 },
 };
 
-// Check if raw name matches Sing Eu (Team Leader)
-function isSingEuLeader(name = '') {
-  if (!name) return false;
-  const clean = name.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
-  return (
-    clean.includes('ស៊ីង') ||
-    clean.includes('សុីង') ||
-    clean.includes('ស៊ឹង') ||
-    clean.includes('សុឺង') ||
-    clean.includes('sing')
-  );
-}
-
 // Normalize Seller Names (Standardizing Team Leaders)
 function normalizeSellerName(name) {
   if (!name) return 'ទូទៅ';
   const clean = name.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').trim();
-  if (isSingEuLeader(clean)) {
+  if (clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង')) {
     return 'ស៊ីង អ៊ី';
   }
   if (clean.includes('ណាក់') || clean.includes('ចំរើន')) {
     return 'ណាក់ ចំរើន';
   }
   return name.trim();
+}
+
+// Detect which Team Leader an order belongs to
+function detectTeamLeader(rawText = '', sellerName = '') {
+  if (rawText) {
+    const lines = rawText.split('\n');
+    // 1. Direct match for ថ្នាក់ដឹកនាំ: or មេក្រុម:
+    for (const line of lines) {
+      const match = line.match(/(?:ថ្នាក់ដឹកនាំ|មេក្រុម|team\s*leader)\s*[:=]\s*(.+)/i);
+      if (match && match[1]) {
+        const extracted = match[1]
+          .replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\u200B\u200C\u200D]+/gu, '')
+          .trim();
+        if (extracted) {
+          if (/ឡា\s*ធីតា/i.test(extracted)) return 'ឡា ធីតា';
+          if (/ឡា\s*បុប្ផា/i.test(extracted)) return 'ឡា បុប្ផា';
+          if (/ផល\s*សុម៉ាលីតា/i.test(extracted)) return 'ផល សុម៉ាលីតា';
+          if (/ឆេង\s*សម្ភស្ស/i.test(extracted)) return 'ឆេង សម្ភស្ស';
+          if (/ឆេង\s*រ៉ាឈីត/i.test(extracted)) return 'ឆេង រ៉ាឈីត';
+          if (/ឆេង\s*ចិន្តា/i.test(extracted)) return 'ឆេង ចិន្តា';
+          if (/វណ្ណ\s*ធីតា/i.test(extracted)) return 'វណ្ណ ធីតា';
+          if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(extracted)) return 'ស៊ីង អ៊ី';
+          return extracted;
+        }
+      }
+    }
+
+    // 2. Named leader checks
+    for (const line of lines) {
+      if (/ថ្នាក់ដឹកនាំ|មេក្រុម|team/i.test(line)) {
+        if (/ឡា\s*ធីតា/i.test(line)) return 'ឡា ធីតា';
+        if (/ឡា\s*បុប្ផា/i.test(line)) return 'ឡា បុប្ផា';
+        if (/ផល\s*សុម៉ាលីតា/i.test(line)) return 'ផល សុម៉ាលីតា';
+        if (/ឆេង\s*សម្ភស្ស/i.test(line)) return 'ឆេង សម្ភស្ស';
+        if (/ឆេង\s*រ៉ាឈីត/i.test(line)) return 'ឆេង រ៉ាឈីត';
+        if (/ឆេង\s*ចិន្តា/i.test(line)) return 'ឆេង ចិន្តា';
+        if (/វណ្ណ\s*ធីតា/i.test(line)) return 'វណ្ណ ធីតា';
+        if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(line)) return 'សុីង អុឺ';
+      }
+    }
+  }
+
+  return 'ទូទៅ';
 }
 
 function getKhmerToday() {
@@ -103,7 +133,7 @@ function parseKhmerDate(rawStr) {
   if (!rawStr) return getKhmerToday();
   const cleaned = normalizeKhmerDigits(rawStr.trim());
 
-  // Matches 31 10 2026 or 31/10/2026 or 31 / 10/2026 or 5/11/2026
+  // Matches 31 10 2026 or 31/10/2026 or 31 / 10/2026
   const partsMatch = cleaned.match(/(\d{1,2})[\s\/\-\.]+(\d{1,2})[\s\/\-\.]+(\d{2,4})/);
   if (partsMatch) {
     const day = partsMatch[1].padStart(2, '0');
@@ -111,10 +141,6 @@ function parseKhmerDate(rawStr) {
     let year = partsMatch[3];
     if (year.length === 2) {
       year = '20' + year;
-    } else if (year.length === 3 && year.startsWith('20')) {
-      year = '202' + year.slice(2);
-    } else if (year === '26' || year === '206') {
-      year = '2026';
     }
     return `${year}-${month}-${day}`;
   }
@@ -139,12 +165,13 @@ function parseOrderText(text) {
   if (rawLines.length === 0) return null;
 
   let locationText = '';
+  let productType = '';
   let customerPhone = '';
+  let advisorPhone = '';
   let packageRaw = '';
   let priceRaw = '';
   let deliveryRaw = '';
   let sellerRaw = '';
-  let teamLeaderRaw = '';
   let dateRaw = '';
 
   for (let i = 0; i < rawLines.length; i++) {
@@ -154,6 +181,17 @@ function parseOrderText(text) {
     // Location: ទីតាំង : ...
     if (/ទីតាំង/i.test(line)) {
       locationText = cleaned.replace(/^ទីតាំង\s*[:៖]?\s*/i, '').trim();
+    }
+    // Product Type: ប្រភេទ : ...
+    else if (/ប្រភេទ/i.test(line)) {
+      productType = cleaned.replace(/^ប្រភេទ\s*[:៖]?\s*/i, '').trim();
+    }
+    // Advisor phone: អ្នកប្រឹក្សា: ...
+    else if (/អ្នកប្រឹក្សា/i.test(line)) {
+      const match = line.match(/(0\d{8,9})/);
+      if (match) {
+        advisorPhone = match[1];
+      }
     }
     // Customer phone: អ្នកទទួល: ...
     else if (/អ្នកទទួល/i.test(line)) {
@@ -183,13 +221,22 @@ function parseOrderText(text) {
     else if (/អ្នកលក់/i.test(line)) {
       sellerRaw = cleaned.replace(/^[\s\S]*?អ្នកលក់\s*[:៖]?\s*/i, '').trim();
     }
-    // Team Leader: ថ្នាក់ដឹកនាំ ឬ មេក្រុម
-    else if (/ថ្នាក់ដឹកនាំ|មេក្រុម|team\s*leader/i.test(line)) {
-      teamLeaderRaw = cleaned.replace(/^[\s\S]*?(ថ្នាក់ដឹកនាំ|មេក្រុម|team\s*leader)\s*[:៖]?\s*/i, '').trim();
+    // Date: Date: or Dat: or កាលបរិច្ឆេទ or ថ្ងៃទី or ថ្ងៃ:
+    else if (/(?:Date|Dat|កាលបរិច្ឆេទ|ថ្ងៃទី|ថ្ងៃ)\s*[:៖]?/i.test(line)) {
+      dateRaw = cleaned.replace(/^[\s\S]*?(?:Date|Dat|កាលបរិច្ឆេទ|ថ្ងៃទី|ថ្ងៃ)\s*[:៖]?\s*/i, '').trim();
     }
-    // Date: Date: or កាលបរិច្ឆេទ or Dat:
-    else if (/Date|Dat|កាលបរិច្ឆេទ/i.test(line)) {
-      dateRaw = cleaned.replace(/^(Date|Dat|កាលបរិច្ឆេទ)\s*[:៖]?\s*/i, '').trim();
+  }
+
+  // Fallback for Date if not explicitly matched by label
+  if (!dateRaw) {
+    for (const line of rawLines) {
+      if (/(?:Dat|Date|ថ្ងៃ)/i.test(line) || /\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(line)) {
+        const dMatch = line.match(/(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/);
+        if (dMatch) {
+          dateRaw = dMatch[1];
+          break;
+        }
+      }
     }
   }
 
@@ -206,46 +253,11 @@ function parseOrderText(text) {
     }
   }
 
-  // Fallback for sellerRaw if not captured via regex
-  if (!sellerRaw && rawLines.length > 0) {
-    for (const line of rawLines) {
-      const cleaned = cleanLineText(line);
-      if (/^អ្នកលក់/i.test(cleaned)) {
-        sellerRaw = cleaned.replace(/^អ្នកលក់\s*[:៖]?\s*/i, '').trim();
-        break;
-      }
-    }
-  }
+  // Determine Team Leader from the message
+  const teamLeader = detectTeamLeader(text, sellerRaw);
 
-  // Fallback for teamLeaderRaw if not captured via regex
-  if (!teamLeaderRaw && rawLines.length > 0) {
-    for (const line of rawLines) {
-      const cleaned = cleanLineText(line);
-      if (/ថ្នាក់ដឹកនាំ|មេក្រុម/i.test(cleaned)) {
-        teamLeaderRaw = cleaned.replace(/^[\s\S]*?(ថ្នាក់ដឹកនាំ|មេក្រុម)\s*[:៖]?\s*/i, '').trim();
-        break;
-      }
-    }
-  }
-
-  // Determine Team & Seller state:
-  // For Team Sing Eu: every order has "អ្នកលក់ : ស៊ីង អឺ" because she is team leader.
-  // We MUST show buttons so the user can choose the real seller.
-  // For other teams (e.g. ឡា បុប្ផា, ហ៊ុន ចាន់ធី): they write their own name directly!
-  const isSingEu = isSingEuLeader(sellerRaw) && (!teamLeaderRaw || isSingEuLeader(teamLeaderRaw));
-  let resolvedSellerName = '';
-  let teamLeader = '';
-
-  if (isSingEu) {
-    resolvedSellerName = ''; // Requires button selection by user!
-    teamLeader = 'ស៊ីង អ៊ី';
-  } else if (sellerRaw) {
-    resolvedSellerName = sellerRaw.trim();
-    teamLeader = teamLeaderRaw ? teamLeaderRaw.trim() : sellerRaw.trim();
-  } else {
-    resolvedSellerName = '';
-    teamLeader = teamLeaderRaw ? teamLeaderRaw.trim() : 'ស៊ីង អ៊ី';
-  }
+  let cleanSeller = normalizeSellerName(sellerRaw);
+  const sellerName = cleanSeller;
 
   // Match Province
   let provinceId = 'phnom_penh';
@@ -282,6 +294,7 @@ function parseOrderText(text) {
   }
 
   // Package & Product Detection:
+  // Check for ឫសដូង (or common variants: ឬសដូង, បួសដូង, កំប៉ុង, ដប)
   const normPkg = normalizeKhmerDigits(packageRaw).toLowerCase();
   const fullTextNorm = normalizeKhmerDigits(text).toLowerCase();
 
@@ -304,27 +317,28 @@ function parseOrderText(text) {
     selectedPkg = PACKAGES[3]; // set_10 ($70)
   } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3')) {
     selectedPkg = PACKAGES[2]; // set_6 ($50)
-  } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || normPkg.includes('3') || normPkg.includes('៣') || normPkg.includes('គ្រីម 3') || normPkg.includes('គ្រីម3')) {
+  } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || normPkg.includes('3') || normPkg.includes('៣')) {
     selectedPkg = PACKAGES[1]; // set_3 ($30)
-  } else if (normPkg.includes('1') || normPkg.includes('១') || normPkg.includes('គ្រី1') || normPkg.includes('គ្រីម 1')) {
+  } else if (normPkg.includes('1') || normPkg.includes('១')) {
     selectedPkg = PACKAGES[0]; // set_1 ($17)
   }
 
   // Dynamic Price Extraction from "តម្លៃ: ..."
-  // Supports: "20ម៉ឺន", "12ម៉ឺន", "30ម៉ឺន", "50$", "200000រៀល", "120000ម៉ឺន"
+  // Supports: "20ម៉ឺន", "12ម៉ឺន", "30ម៉ឺន", "50$", "200000រៀល"
   let parsedPrice = null;
   if (priceRaw) {
-    const normPrice = normalizeKhmerDigits(priceRaw);
+    const normPrice = normalizeKhmerDigits(priceRaw)
+      .replace(/[\uFE0E\uFE0F\s]+/g, '')
+      .replace(/មុឺន|មឺន|មុឺង|ម៉ឺង|ម៉ឺន/g, 'ម៉ឺន');
 
-    // 1. Check for "ម៉ឺន" (e.g. 20ម៉ឺន = $50, 12ម៉ឺន = $30)
-    const meunMatch = normPrice.match(/(\d+)\s*ម៉ឺន/i);
+    // 1. Check for "ម៉ឺន" / "មុឺន" (e.g. 20ម៉ឺន = $50, 12មុឺន = $30, 6.8ម៉ឺន = $17, 120000ម៉ឺន = $30)
+    const meunMatch = normPrice.match(/([\d\.]+)\s*ម៉ឺន/i);
     if (meunMatch) {
-      const meunVal = parseInt(meunMatch[1], 10);
+      const meunVal = parseFloat(meunMatch[1]);
       if (meunVal >= 1000) {
-        // Shorthand for 120000 Riels
         parsedPrice = Math.round(meunVal / 4000);
       } else {
-        parsedPrice = meunVal * 2.5;
+        parsedPrice = Math.round(meunVal * 2.5);
       }
     }
 
@@ -336,7 +350,7 @@ function parseOrderText(text) {
       }
     }
 
-    // 3. Check for raw Riels (e.g. 200000, 120000, 68000)
+    // 3. Check for raw Riels (e.g. 200000, 120000)
     if (!parsedPrice) {
       const rielMatch = normPrice.match(/(\d{4,6})/);
       if (rielMatch) {
@@ -398,6 +412,8 @@ function parseOrderText(text) {
 
   return {
     customerPhone: customerPhone ? customerPhone.trim() : 'N/A',
+    advisorPhone: advisorPhone ? advisorPhone.trim() : '',
+    productType: productType ? productType.trim() : '',
     provinceId,
     provinceKm: matchedProv ? matchedProv.km : 'ភ្នំពេញ',
     destination: destination ? destination.trim() : 'N/A',
@@ -406,11 +422,8 @@ function parseOrderText(text) {
     deliveryMethod,
     companyDeliveryType,
     deliveryFee,
-    sellerRaw: (sellerRaw || '').trim(),
-    sellerName: resolvedSellerName,
-    isSingEuTeam: isSingEu,
+    sellerName: sellerName.trim(),
     teamLeader,
-    teamLeaderRaw,
     date,
     paymentStatus,
     rawText: text,
@@ -427,18 +440,17 @@ function buildCompleteOrder({
   paymentStatus = null,
   teamLeader = null,
 }) {
-  const { pkg, deliveryMethod, companyDeliveryType, deliveryFee, sellerName, provinceId, destination, customerPhone, date, rawText } = parsed;
+  const { pkg, deliveryMethod, companyDeliveryType, deliveryFee, sellerName, provinceId, destination, customerPhone, advisorPhone, productType, date, rawText } = parsed;
 
-  const isCod = deliveryMethod === 'company' && companyDeliveryType === 'cod';
-  const table = isCod ? SELLER_COMMISSION_RATES.cod : SELLER_COMMISSION_RATES.standard;
-  const sellerCommission = sellerRole === 'staff' ? 0 : (table[pkg.id] || 3);
+  // Team members sell for themselves (no commission deduction)
+  const sellerCommission = 0;
 
   const tubes = pkg.tubes || 1;
   const cans = pkg.cans || 0;
 
   // Cream cost = $3.50/tube, ឫសដូង can cost = $18.00/can
   const productCost = (tubes * 3.5) + (cans * 18.0);
-  const orderProfit = pkg.price - deliveryFee - productCost - sellerCommission;
+  const orderProfit = pkg.price - deliveryFee - productCost;
 
   const timestamp = Date.now();
   const id = `ord_${timestamp}_${Math.random().toString(36).substring(2, 6)}`;
@@ -446,12 +458,14 @@ function buildCompleteOrder({
   const cleanDestination = (destination || 'N/A').replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '').toWellFormed().trim();
   const cleanPhone = (customerPhone || 'N/A').toWellFormed().trim();
   const cleanSeller = normalizeSellerName(sellerName || 'ទូទៅ');
-  const finalTeamLeader = teamLeader || parsed.teamLeader || 'ស៊ីង អ៊ី';
+  const finalTeamLeader = teamLeader || parsed.teamLeader || detectTeamLeader(cleanSeller, rawText || '');
 
   return {
     id,
     orderNumber,
     customerPhone: cleanPhone,
+    advisorPhone: advisorPhone || '',
+    productType: productType || '',
     sellerName: cleanSeller,
     teamLeader: finalTeamLeader,
     sellerRole,
@@ -469,14 +483,18 @@ function buildCompleteOrder({
     deliveryFee,
     date,
     paymentStatus: paymentStatus || parsed.paymentStatus || 'unpaid',
-    createdAt: new Date().toISOString(),
+    note: 'បញ្ចូលតាមរយៈ Telegram Chatbot',
+    createdBy: 'Telegram Bot',
+    updatedAt: new Date().toISOString(),
   };
 }
 
 module.exports = {
+  CAMBODIA_PROVINCES,
+  PACKAGES,
   parseOrderText,
   buildCompleteOrder,
   getKhmerToday,
   normalizeSellerName,
-  isSingEuLeader,
+  detectTeamLeader,
 };
