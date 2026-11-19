@@ -1,17 +1,4 @@
 require('dotenv').config();
-
-process.on('unhandledRejection', (reason, promise) => {
-  // Ignore harmless Telegram "message is not modified" errors
-  if (reason && reason.message && reason.message.includes('message is not modified')) {
-    return;
-  }
-  console.error('⚠️ Unhandled Rejection:', reason);
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('⚠️ Uncaught Exception:', err);
-});
-
 const TelegramBot = require('node-telegram-bot-api');
 const { initializeApp, getApps } = require('firebase/app');
 const {
@@ -19,69 +6,71 @@ const {
   collection,
   doc,
   setDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
   where,
-  onSnapshot,
+  orderBy,
 } = require('firebase/firestore');
 const http = require('http');
 const https = require('https');
-const { parseOrderText, buildCompleteOrder } = require('./parser');
+const { parseOrderText, buildCompleteOrder, getKhmerToday, isSingEuLeader } = require('./parser');
 
 // ----------------------------------------------------
-// Firebase Configuration (boost-tracker-v2)
+// Database 1: Order Management (seth-3aa05)
+// ⚠️ EXCLUSIVELY FOR TEAM SING EU ONLY!
 // ----------------------------------------------------
-const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY || "AIzaSyAjAvSMf5KYJoS6kxetAAduISvCuEWHIcI",
-  authDomain: process.env.FIREBASE_AUTH_DOMAIN || "boost-tracker-v2.firebaseapp.com",
-  projectId: process.env.FIREBASE_PROJECT_ID || "boost-tracker-v2",
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "boost-tracker-v2.firebasestorage.app",
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || "420378404136",
-  appId: process.env.FIREBASE_APP_ID || "1:420378404136:web:6a69990efad966d0261c1d",
-  measurementId: process.env.FIREBASE_MEASUREMENT_ID || "G-BYLBH6CZHG"
+const firebaseConfigOrderDb = {
+  apiKey: "AIzaSyDzUauBrOR3w6Q58PXX0S_1ceid0NBi2sU",
+  authDomain: "seth-3aa05.firebaseapp.com",
+  projectId: "seth-3aa05",
+  storageBucket: "seth-3aa05.firebasestorage.app",
+  messagingSenderId: "707626112303",
+  appId: "1:707626112303:web:195deaea25ac0df07bdda",
+  measurementId: "G-JQVGET5ZPZ",
 };
-
-let db = null;
-try {
-  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-  db = getFirestore(app);
-  console.log('✅ Connected to Firebase Firestore (boost-tracker-v2)');
-} catch (e) {
-  console.error('❌ Firebase connection error:', e.message);
-}
+const orderApp = getApps().some((a) => a.name === '[DEFAULT]')
+  ? getApps().find((a) => a.name === '[DEFAULT]')
+  : initializeApp(firebaseConfigOrderDb);
+const dbOrders = getFirestore(orderApp);
 
 // ----------------------------------------------------
-// Health Check Server (Render / Cloud keep-alive)
+// Database 2: Team Units Tracker (team-units-db)
+// 🌐 FOR ALL TEAMS (Team Sing Eu + All other Teams!)
+// ----------------------------------------------------
+const firebaseConfigTeamUnits = {
+  apiKey: "AIzaSyDNL3lKs1Aat-T0_C6tagfGbYuPvH4UDp4",
+  authDomain: "team-units-db.firebaseapp.com",
+  projectId: "team-units-db",
+  storageBucket: "team-units-db.firebasestorage.app",
+  messagingSenderId: "484611379083",
+  appId: "1:484611379083:web:aafd83f7862e8da262e98e",
+  measurementId: "G-VH90PZG9L3",
+};
+const teamUnitsApp = getApps().some((a) => a.name === 'teamUnitsApp')
+  ? getApps().find((a) => a.name === 'teamUnitsApp')
+  : initializeApp(firebaseConfigTeamUnits, 'teamUnitsApp');
+const dbTeamUnits = getFirestore(teamUnitsApp);
+
+// ----------------------------------------------------
+// Cloud Health Check & Keep-Alive Ping (Render)
 // ----------------------------------------------------
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('🚀 Boost & Sales Tracker Bot is Online 24/7!');
+  res.end('🚀 Boost & Sales Tracker Multi-Bot Server is Online (Shop 1 & Shop 2) 24/7!');
 }).listen(PORT, () => {
-  console.log(`📡 Cloud Health Check Server running on port ${PORT}`);
+  console.log(`📡 Cloud Health Check Server is running on port ${PORT}`);
 });
 
-// ----------------------------------------------------
-// Helper Functions
-// ----------------------------------------------------
-function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
-  // When initially posted, neither button has a checkmark until someone clicks
-  if (isInitial) {
-    return [
-      [
-        {
-          text: '🟢 បានទូទាត់',
-          callback_data: `tgpay:${orderId}:paid`,
-        },
-        {
-          text: '🟠 មិនទាន់ទូទាត់',
-          callback_data: `tgpay:${orderId}:unpaid`,
-        },
-      ],
-    ];
-  }
+const CLOUD_URL = 'https://boost-sales-tracker-bot.onrender.com';
+setInterval(() => {
+  https.get(CLOUD_URL, () => {}).on('error', () => {});
+}, 8 * 60 * 1000); // Ping every 8 minutes
 
+// Helper to generate the 2 clear payment buttons
+function getPaymentInlineKeyboard(orderId, currentStatus) {
   const isPaid = currentStatus === 'paid';
   return [
     [
@@ -97,41 +86,40 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   ];
 }
 
-function sanitizeForFirestore(obj) {
-  if (obj === null || obj === undefined) return null;
-  if (typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(sanitizeForFirestore);
-
-  const clean = {};
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === undefined) continue;
-    clean[key] = sanitizeForFirestore(value);
+// Helper to generate the Confirm / Cancel buttons for App 2 (All teams outside Sing Eu)
+function getApp2ConfirmInlineKeyboard(orderId, status = 'pending') {
+  if (status === 'confirmed') {
+    return [
+      [
+        {
+          text: '✅ បានយល់ព្រមរួចរាល់',
+          callback_data: `app2_action:${orderId}:noop`,
+        },
+      ],
+    ];
   }
-  return clean;
-}
-
-// Saves order to both global 'orders' and personal folder 'seller_orders/{sellerName}/orders'
-async function saveOrderToFirestore(completeOrder) {
-  if (!db) {
-    console.error('⚠️ Firestore db is not connected. Cannot save order.');
-    return;
+  if (status === 'cancelled') {
+    return [
+      [
+        {
+          text: '❌ បានបោះបង់រួចរាល់',
+          callback_data: `app2_action:${orderId}:noop`,
+        },
+      ],
+    ];
   }
-  const cleanOrder = sanitizeForFirestore(completeOrder);
-  // 1. Root orders collection
-  await setDoc(doc(db, 'orders', completeOrder.id), cleanOrder);
-
-  // 2. Personal folder per seller: seller_orders/{sellerName}/orders/{orderId}
-  const seller = completeOrder.sellerName || 'ទូទៅ';
-  const sellerOrderRef = doc(db, 'seller_orders', seller, 'orders', completeOrder.id);
-  await setDoc(sellerOrderRef, cleanOrder, { merge: true });
-
-  // Update parent seller folder info
-  const parentRef = doc(db, 'seller_orders', seller);
-  await setDoc(parentRef, {
-    sellerName: seller,
-    teamLeader: completeOrder.teamLeader || 'ឡា ធីតា',
-    lastUpdated: new Date().toISOString(),
-  }, { merge: true });
+  return [
+    [
+      {
+        text: '❌ បោះបង់',
+        callback_data: `app2_action:${orderId}:cancel`,
+      },
+      {
+        text: '✅ យល់ព្រម',
+        callback_data: `app2_action:${orderId}:confirm`,
+      },
+    ],
+  ];
 }
 
 function normalizeKhmer(str) {
@@ -139,7 +127,142 @@ function normalizeKhmer(str) {
   return str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
 }
 
-// Split multiple orders if posted together in one single message
+/**
+ * Phonetic normalization for Khmer names:
+ * Strips zero-width chars, spaces, and optional diacritics (៉, ៊, ់, ៍, ៏, ៌).
+ * Normalizes similar vowels:
+ * ែ -> េ, ី -> ិ, ឺ -> ឹ, ូ -> ុ
+ */
+function khmerPhoneticNormalize(str) {
+  if (!str) return '';
+  let s = str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  s = s.replace(/[\u17C9\u17CA\u17CB\u17CD\u17CE\u17CF]/g, '');
+  s = s.replace(/\u17C2/g, '\u17C1'); // ែ -> េ
+  s = s.replace(/\u17B8/g, '\u17B7'); // ី -> ិ
+  s = s.replace(/\u17BA/g, '\u17B9'); // ឺ -> ឹ
+  s = s.replace(/\u17BC/g, '\u17BB'); // ូ -> ុ
+  s = s.replace(/ដ/g, 'ត'); // ដ -> ត (ធីដា / ធីតា)
+  return s;
+}
+
+function levenshteinDistance(a, b) {
+  const an = a ? a.length : 0;
+  const bn = b ? b.length : 0;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix = Array.from({ length: bn + 1 }, () => new Array(an + 1).fill(0));
+  for (let i = 0; i <= an; ++i) matrix[0][i] = i;
+  for (let i = 0; i <= bn; ++i) matrix[i][0] = i;
+  for (let i = 1; i <= bn; ++i) {
+    for (let j = 1; j <= an; ++j) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  return matrix[bn][an];
+}
+
+function calculateKhmerSimilarity(inputName, targetName) {
+  const pInput = khmerPhoneticNormalize(inputName);
+  const pTarget = khmerPhoneticNormalize(targetName);
+  if (!pInput || !pTarget) return 0;
+
+  // 1. Exact phonetic match of full name
+  if (pInput === pTarget) return 1.0;
+
+  // Split targetName into words (e.g. ['ផល', 'សុម៉ាលីតា'])
+  const targetWords = (targetName || '').trim().split(/\s+/).filter(Boolean);
+
+  if (targetWords.length >= 2) {
+    const givenName = targetWords[targetWords.length - 1]; // last word / suffix (ឈ្មោះខ្លួន)
+    const pGiven = khmerPhoneticNormalize(givenName);
+
+    // Check if input matches the given name (suffix) phonetically
+    if (pInput === pGiven) return 0.98;
+
+    // Check if input is a typo of given name (Levenshtein similarity to given name)
+    const distGiven = levenshteinDistance(pInput, pGiven);
+    const maxLenGiven = Math.max(pInput.length, pGiven.length);
+    const simGiven = (maxLenGiven - distGiven) / maxLenGiven;
+    if (simGiven >= 0.80) return simGiven * 0.95; // e.g. 'រាឈិត' vs 'រ៉ាឈីត'
+
+    // Check if target ends with input (suffix)
+    if (pInput.length >= 3 && pTarget.endsWith(pInput)) {
+      return 0.95;
+    }
+
+    // IMPORTANT: Exclude prefix / family name (ក្បាលមុខ ដូចជា 'ផល', 'ម៉េត', 'ឆេង')!
+    // Multiple people share the same family name, so matching prefix-only is disabled.
+    const familyName = targetWords[0];
+    const pFamily = khmerPhoneticNormalize(familyName);
+    if (pInput === pFamily || pTarget.startsWith(pInput)) {
+      return 0;
+    }
+  }
+
+  // 2. Full-name fuzzy similarity (Levenshtein)
+  const maxLen = Math.max(pInput.length, pTarget.length);
+  const dist = levenshteinDistance(pInput, pTarget);
+  return (maxLen - dist) / maxLen;
+}
+
+function sanitizeForFirestore(obj) {
+  if (typeof obj === 'string') {
+    const wellFormed = obj.toWellFormed ? obj.toWellFormed() : obj;
+    return wellFormed.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '').trim();
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeForFirestore);
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    const res = {};
+    for (const k of Object.keys(obj)) {
+      res[k] = sanitizeForFirestore(obj[k]);
+    }
+    return res;
+  }
+  return obj;
+}
+
+// Check if a member or team belongs to Team Sing Eu
+function isSingEuMemberOrTeam(name = '', groupName = '') {
+  // If teamLeader is explicitly specified and belongs to another leader (e.g. ឡា ធីតា, ឡា បុប្ផា, ហ៊ុន ចាន់ធី), it is NOT Team Sing Eu!
+  if (groupName && !isSingEuLeader(groupName)) {
+    return false;
+  }
+  if (groupName && isSingEuLeader(groupName)) {
+    return true;
+  }
+
+  const cleanName = normalizeKhmer(name || '');
+  if (!cleanName) return false;
+  if (isSingEuLeader(cleanName)) return true;
+
+  // Exact or full member patterns (never single syllables like 'នួ' or 'កា')
+  const singEuMemberPatterns = [
+    'ស្រីកា',
+    'ពន្លក', 'ពូពន្លក',
+    'ស្រីនួ',
+    'ញ៉ាញ់', 'ចែញ៉ាញ់', 'ចៃញ៉ាញ់',
+    'ស្រីណុច'
+  ];
+
+  for (const pat of singEuMemberPatterns) {
+    if (cleanName === pat || cleanName.includes(pat)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function splitOrderBlocks(text) {
   if (!text) return [];
   const lines = text.split('\n');
@@ -148,418 +271,756 @@ function splitOrderBlocks(text) {
 
   for (const line of lines) {
     const isHeader = /ទីតាំង/i.test(line);
-    if (isHeader && currentBlock.length > 0) {
-      blocks.push(currentBlock.join('\n').trim());
-      currentBlock = [];
+    if (isHeader && currentBlock.some(l => /អ្នកទទួល|ចំនួន|តម្លៃ|ទូរស័ព្ទ/i.test(l))) {
+      blocks.push(currentBlock.join('\n'));
+      currentBlock = [line];
+    } else {
+      currentBlock.push(line);
     }
-    currentBlock.push(line);
   }
   if (currentBlock.length > 0) {
-    blocks.push(currentBlock.join('\n').trim());
+    blocks.push(currentBlock.join('\n'));
   }
-  return blocks;
+  const valid = blocks.filter(b => /អ្នកទទួល|ទីតាំង/i.test(b));
+  return valid.length > 1 ? valid : [text];
 }
 
 // ----------------------------------------------------
-// Main Bot Service
+// Global Team Units Hierarchy Management (Database 2)
 // ----------------------------------------------------
-const token = process.env.TELEGRAM_BOT_TOKEN;
-if (!token || token.includes('YOUR_NEW_TELEGRAM')) {
-  console.error('❌ TELEGRAM_BOT_TOKEN missing in .env!');
-  process.exit(1);
-}
+let cachedTeamGroups = [];
 
-const bot = new TelegramBot(token, {
-  polling: {
-    interval: 300,
-    autoStart: true,
-    params: { timeout: 10 },
-  },
-});
-
-console.log('🤖 Telegram Bot is RUNNING! Target: boost-tracker-v2');
-
-bot.on('polling_error', (err) => {
-  console.log('[Polling notice]:', err.code || err.message);
-});
-
-function normalizeKhmerStr(str) {
-  if (!str) return '';
-  return str.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
-}
-
-function calculateOrderCommission(orderData) {
-  const tubes = Number(orderData.tubes || 0);
-  const cans = Number(orderData.cans || 0);
-  const pkgId = orderData.packageId || '';
-  const prodType = (orderData.productType || '').toLowerCase();
-
-  if ((cans > 0 && tubes > 0) || prodType.includes('ថ្នាំ') || prodType.includes('កំប៉ុង') || pkgId.startsWith('combo_')) {
-    const pairs = cans > 0 && tubes > 0 ? Math.min(cans, tubes) : tubes;
-    if (pairs >= 5) return 25;
-    if (pairs === 3) return 15;
-    if (pairs === 2) return 10;
-    return 5;
-  }
-
-  if (tubes === 1) return 1;
-  if (tubes === 3 || tubes === 2) return 2;
-  if (tubes === 6 || tubes === 4 || tubes === 5) return 3;
-  if (tubes >= 8) return 5;
-
-  return 2;
-}
-
-function getCommissionMemberKeyboard(orderId, leaderInfo) {
-  const keyboard = [];
-  let row = [];
-  const members = (leaderInfo && Array.isArray(leaderInfo.withLeaderMembers)) ? leaderInfo.withLeaderMembers : [];
-
-  members.forEach((memName, idx) => {
-    row.push({
-      text: `👤 ${memName}`,
-      callback_data: `comm:${orderId}:${idx}`,
-    });
-    if (row.length === 2) {
-      keyboard.push(row);
-      row = [];
+async function loadTeamUnitsGroups() {
+  try {
+    const snap = await getDoc(doc(dbTeamUnits, 'team_units_metadata', 'groups_hierarchy'));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (Array.isArray(data.groups)) {
+        cachedTeamGroups = data.groups;
+        return cachedTeamGroups;
+      }
     }
+  } catch (err) {
+    console.error('Error loading team units groups:', err.message);
+  }
+  return cachedTeamGroups;
+}
+
+// Initial load
+loadTeamUnitsGroups();
+
+/**
+ * Resolves a seller name to its exact Team Group and Role in App 2 (team-units-db).
+ * If unknown, registers a new Team Group so the seller immediately appears in App 2!
+ */
+async function resolveTeamMember(rawName, rawLeader = '') {
+  await loadTeamUnitsGroups();
+  const trimmed = (rawName || '').trim();
+  const norm = normalizeKhmer(trimmed);
+  const trimmedLeader = (rawLeader || '').trim();
+  const normLeader = normalizeKhmer(trimmedLeader);
+
+  if (!norm && !normLeader) {
+    return {
+      sellerName: 'ស៊ីង អ៊ី',
+      groupId: 'group_sing_e',
+      groupName: 'Team ស៊ីង អ៊ី',
+      role: 'មេក្រុម',
+    };
+  }
+
+  // 1. Direct aliases & known member maps (ONLY exact or specific, NEVER loose substring like includes('នួ')!)
+  if (norm === 'បុប្ផា' || norm === 'ឡាបុប្ផា' || norm === 'បូប្ផា' || norm === 'ឡាបូប្ផា' || norm === 'bopha') {
+    const bGrp = cachedTeamGroups.find((g) =>
+      normalizeKhmer(g.name).includes('bopha') ||
+      normalizeKhmer(g.name).includes('bo pha') ||
+      normalizeKhmer(g.name).includes('បុប្ផា') ||
+      normalizeKhmer(g.name).includes('បូប្ផា') ||
+      normalizeKhmer(g.leaderName).includes('bopha') ||
+      normalizeKhmer(g.leaderName).includes('បុប្ផា') ||
+      normalizeKhmer(g.leaderName).includes('បូប្ផា')
+    );
+    return {
+      sellerName: bGrp ? bGrp.leaderName : 'ឡា បុប្ផា',
+      groupId: bGrp ? bGrp.id : 'group_1793850146091',
+      groupName: bGrp ? bGrp.name : 'Team Bo pha',
+      role: 'មេក្រុម',
+    };
+  }
+
+  if (norm === 'សៅបេន' || norm === 'សៅ បេន' || norm.startsWith('សៅបេន')) {
+    return {
+      sellerName: 'សៅ បេន',
+      groupId: 'group_1793777252222',
+      groupName: 'Team Bopha',
+      role: 'កូនក្រុម',
+    };
+  }
+
+  if (norm === 'ស្រីកា' || norm === 'ស្រី កា' || (norm.startsWith('ស្រីកា') && !norm.startsWith('ស្រីកាន'))) {
+    return {
+      sellerName: 'ស្រី កា',
+      groupId: 'group_sing_e',
+      groupName: 'Team ស៊ីង អ៊ី',
+      role: 'កូនក្រុម',
+    };
+  }
+
+  if (norm === 'ពន្លក' || norm === 'ពូពន្លក' || norm === 'ពូ ពន្លក') {
+    return {
+      sellerName: 'ពូ ពន្លក',
+      groupId: 'group_sing_e',
+      groupName: 'Team ស៊ីង អ៊ី',
+      role: 'កូនក្រុម',
+    };
+  }
+
+  if (norm === 'ស្រីនួ' || norm === 'ស្រី នួ' || (norm.startsWith('ស្រីនួ') && !norm.startsWith('ស្រីនួន'))) {
+    return {
+      sellerName: 'ស្រី នួ',
+      groupId: 'group_sing_e',
+      groupName: 'Team ស៊ីង អ៊ី',
+      role: 'កូនក្រុម',
+    };
+  }
+
+  if (norm === 'ញ៉ាញ់' || norm === 'ចែញ៉ាញ់' || norm === 'ចៃញ៉ាញ់' || norm === 'ចៃ ញ៉ាញ់' || norm === 'ចែ ញ៉ាញ់') {
+    return {
+      sellerName: 'ចៃ ញ៉ាញ់',
+      groupId: 'group_sing_e',
+      groupName: 'Team ស៊ីង អ៊ី',
+      role: 'កូនក្រុម',
+    };
+  }
+
+  if (isSingEuLeader(trimmed) && (!trimmedLeader || isSingEuLeader(trimmedLeader))) {
+    return {
+      sellerName: 'ស៊ីង អ៊ី',
+      groupId: 'group_sing_e',
+      groupName: 'Team ស៊ីង អ៊ី',
+      role: 'មេក្រុម',
+    };
+  }
+
+  // 1.5. If a leader is explicitly provided (e.g. ថ្នាក់ដឹកនាំ: ឡា ធីតា), prioritize finding that leader's team!
+  if (trimmedLeader) {
+    let matchedGroup = null;
+    let bestLeaderScore = 0;
+
+    for (const grp of cachedTeamGroups) {
+      if (grp.id === 'group_unassigned') continue;
+      // Compare leaderName
+      if (grp.leaderName) {
+        if (normalizeKhmer(grp.leaderName) === normLeader) {
+          matchedGroup = grp;
+          break;
+        }
+        const score = calculateKhmerSimilarity(trimmedLeader, grp.leaderName);
+        if (score > bestLeaderScore && score >= 0.75) {
+          bestLeaderScore = score;
+          matchedGroup = grp;
+        }
+      }
+      // Also compare grp.name (e.g. "ទី ៨ (ឡា ធីដា)")
+      if (grp.name) {
+        if (normalizeKhmer(grp.name).includes(normLeader)) {
+          matchedGroup = grp;
+          break;
+        }
+        const nameScore = calculateKhmerSimilarity(trimmedLeader, grp.name);
+        if (nameScore > bestLeaderScore && nameScore >= 0.75) {
+          bestLeaderScore = nameScore;
+          matchedGroup = grp;
+        }
+      }
+    }
+
+    if (matchedGroup) {
+      console.log(`[Smart Match] Found Leader's Group for "${trimmedLeader}": "${matchedGroup.name}" (${matchedGroup.id})`);
+
+      // Check if seller matches leader themself
+      if (trimmed && (normalizeKhmer(matchedGroup.leaderName) === norm || calculateKhmerSimilarity(trimmed, matchedGroup.leaderName) >= 0.85)) {
+        return {
+          sellerName: matchedGroup.leaderName,
+          groupId: matchedGroup.id,
+          groupName: matchedGroup.name,
+          role: matchedGroup.leaderRole || 'មេក្រុម',
+        };
+      }
+
+      // Check if seller matches any existing member in this leader's group
+      for (const mem of (matchedGroup.members || [])) {
+        if (normalizeKhmer(mem.name) === norm || calculateKhmerSimilarity(trimmed, mem.name) >= 0.85) {
+          return {
+            sellerName: mem.name,
+            groupId: matchedGroup.id,
+            groupName: matchedGroup.name,
+            role: mem.role || 'កូនក្រុម',
+          };
+        }
+      }
+
+      // Seller is a new member under this leader (e.g. នួន និមល under ឡា ធីតា / ឡា ធីដា)!
+      try {
+        const newMember = {
+          id: `m_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          name: trimmed,
+          role: 'កូនក្រុម',
+        };
+        matchedGroup.members = matchedGroup.members || [];
+        matchedGroup.members.push(newMember);
+
+        await setDoc(
+          doc(dbTeamUnits, 'team_units_metadata', 'groups_hierarchy'),
+          sanitizeForFirestore({ groups: cachedTeamGroups, updatedAt: new Date().toISOString() })
+        );
+        console.log(`[Smart Match] Auto-added new member "${trimmed}" to team "${matchedGroup.name}"!`);
+      } catch (err) {
+        console.error('Failed to auto-add member to group hierarchy:', err.message);
+      }
+
+      return {
+        sellerName: trimmed,
+        groupId: matchedGroup.id,
+        groupName: matchedGroup.name,
+        role: 'កូនក្រុម',
+      };
+    }
+  }
+
+  // 2. Smart Search across existing cached groups (Exact -> Phonetic -> Suffix/Substring -> Fuzzy >= 80%)
+  let bestCandidate = null;
+  let highestScore = 0;
+
+  // Prioritize active teams over unassigned group
+  const sortedGroups = [...cachedTeamGroups].sort((a, b) => {
+    const aUn = a.id === 'group_unassigned' || (a.name || '').includes('មិនទាន់មានក្រុម') ? 1 : 0;
+    const bUn = b.id === 'group_unassigned' || (b.name || '').includes('មិនទាន់មានក្រុម') ? 1 : 0;
+    return aUn - bUn;
   });
 
-  if (row.length > 0) {
-    keyboard.push(row);
+  for (const grp of sortedGroups) {
+    // Check leader
+    if (grp.leaderName) {
+      if (normalizeKhmer(grp.leaderName) === norm) {
+        return {
+          sellerName: grp.leaderName,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: grp.leaderRole || 'មេក្រុម',
+        };
+      }
+      const score = calculateKhmerSimilarity(trimmed, grp.leaderName);
+      if (score > highestScore) {
+        highestScore = score;
+        bestCandidate = {
+          sellerName: grp.leaderName,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: grp.leaderRole || 'មេក្រុម',
+          isUnassigned: grp.id === 'group_unassigned',
+        };
+      }
+    }
+
+    // Check members
+    for (const mem of (grp.members || [])) {
+      if (!mem.name) continue;
+      if (normalizeKhmer(mem.name) === norm) {
+        return {
+          sellerName: mem.name,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: mem.role || 'កូនក្រុម',
+        };
+      }
+      const score = calculateKhmerSimilarity(trimmed, mem.name);
+      if (score > highestScore) {
+        highestScore = score;
+        bestCandidate = {
+          sellerName: mem.name,
+          groupId: grp.id,
+          groupName: grp.name,
+          role: mem.role || 'កូនក្រុម',
+          isUnassigned: grp.id === 'group_unassigned',
+        };
+      }
+    }
   }
 
-  keyboard.push([
-    {
-      text: '👑 មេក្រុមលក់ផ្ទាល់ខ្លួន',
-      callback_data: `comm:${orderId}:self`,
-    },
-  ]);
+  // If highest similarity is >= 80% (phonetic match, typo, suffix/substring match)
+  if (bestCandidate && highestScore >= 0.80) {
+    console.log(`[Khmer Smart Match] Matched "${trimmed}" -> "${bestCandidate.sellerName}" in "${bestCandidate.groupName}" (Score: ${(highestScore * 100).toFixed(0)}%)`);
+    return {
+      sellerName: bestCandidate.sellerName,
+      groupId: bestCandidate.groupId,
+      groupName: bestCandidate.groupName,
+      role: bestCandidate.role,
+      isUnassigned: bestCandidate.isUnassigned,
+    };
+  }
 
-  return keyboard;
+  // 3. Unknown / New seller (Option 3 requested by user):
+  // Put into "មិនទាន់មានក្រុម" (group_unassigned) so admin can organize/move them in App 2!
+  try {
+    let unassignedGrp = cachedTeamGroups.find((g) => g.id === 'group_unassigned' || (g.name || '').includes('មិនទាន់មានក្រុម'));
+    const cleanName = trimmed;
+
+    if (!unassignedGrp) {
+      unassignedGrp = {
+        id: 'group_unassigned',
+        name: 'មិនទាន់មានក្រុម',
+        leaderName: 'អ្នកលក់ទូទៅ',
+        leaderRole: 'មេក្រុម',
+        members: [{ id: `m_${Date.now()}`, name: cleanName, role: 'កូនក្រុម' }],
+      };
+      cachedTeamGroups.push(unassignedGrp);
+    } else {
+      const alreadyInList = (unassignedGrp.members || []).some((m) =>
+        normalizeKhmer(m.name) === norm || calculateKhmerSimilarity(m.name, cleanName) >= 0.85
+      );
+      if (!alreadyInList) {
+        if (!unassignedGrp.members) unassignedGrp.members = [];
+        unassignedGrp.members.push({ id: `m_${Date.now()}`, name: cleanName, role: 'កូនក្រុម' });
+      }
+    }
+
+    await setDoc(doc(dbTeamUnits, 'team_units_metadata', 'groups_hierarchy'), {
+      groups: cachedTeamGroups,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    console.log(`[Unassigned Seller Registered] Added ${cleanName} to មិនទាន់មានក្រុម`);
+    return {
+      sellerName: cleanName,
+      groupId: unassignedGrp.id,
+      groupName: unassignedGrp.name,
+      role: 'កូនក្រុម',
+      isUnassigned: true,
+    };
+  } catch (err) {
+    console.error('Error handling unassigned seller:', err.message);
+  }
+
+  return {
+    sellerName: trimmed,
+    groupId: 'group_unassigned',
+    groupName: 'មិនទាន់មានក្រុម',
+    role: 'កូនក្រុម',
+    isUnassigned: true,
+  };
 }
 
-// Cache for sellers and teams
-let cachedSellers = [];
-let cachedGroups = [];
-let memberTeamMap = {};
-let leaderTeamMap = {};
-const pendingOrders = new Map();
+/**
+ * Saves unit numbers (tubes and cans) directly to team_units_records in App 2 (team-units-db)
+ */
+async function syncToTeamUnitsDb({ completeOrder, resolvedMember, tubes, cans }) {
+  try {
+    const recordId = `rec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const unitRecord = {
+      id: recordId,
+      orderId: completeOrder.id,
+      orderNumber: completeOrder.orderNumber || '',
+      date: completeOrder.date,
+      customerPhone: completeOrder.customerPhone || '',
+      destination: completeOrder.destination || '',
+      price: completeOrder.price || 0,
+      paymentStatus: completeOrder.paymentStatus || 'unpaid',
+      sellerName: resolvedMember.sellerName || completeOrder.sellerName,
+      teamLeader: resolvedMember.groupName || completeOrder.teamLeader || 'ក្រុម',
+      packageId: completeOrder.packageId || 'set_3',
+      deliveryMethod: completeOrder.deliveryMethod || 'company',
+      companyDeliveryType: completeOrder.companyDeliveryType || 'standard',
+      deliveryFee: completeOrder.deliveryFee || 2,
+      groupId: resolvedMember.groupId || 'group_general',
+      role: resolvedMember.role || 'កូនក្រុម',
+      tubes: Number(tubes || 0),
+      cans: Number(cans || 0),
+      note: `កុម្ម៉ង់ #${completeOrder.orderNumber || ''} (${completeOrder.destination || ''})`,
+      createdAt: new Date().toISOString(),
+    };
 
-function updateTeamsState(groups) {
-  if (!Array.isArray(groups)) return;
-  cachedGroups = groups;
-  memberTeamMap = {};
-  leaderTeamMap = {};
+    await setDoc(doc(dbTeamUnits, 'team_units_records', unitRecord.id), unitRecord);
+    console.log(`[Database 2 Sync ✅] Record #${unitRecord.id} saved for ${unitRecord.sellerName} (${unitRecord.tubes} ទីប + ${unitRecord.cans} កំប៉ុង) on ${unitRecord.date}`);
+    return unitRecord;
+  } catch (err) {
+    console.error('Error syncing to team units db:', err.message);
+    return null;
+  }
+}
 
-  groups.forEach((grp) => {
-    const gName = grp.name || '';
-    const lName = grp.leaderName || '';
-    const commLeader = grp.commissionLeader || lName;
-    const withLeaderMembers = [];
+/**
+ * Factory function to create and run an isolated Telegram Bot instance
+ */
+function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle }) {
+  if (!token || token.includes('YOUR_TELEGRAM')) {
+    console.log(`⚠️ Skipped ${shopName}: Token not configured.`);
+    return null;
+  }
 
-    if (Array.isArray(grp.members)) {
-      grp.members.forEach((m) => {
-        const mName = typeof m === 'string' ? m.trim() : (m?.name || '').trim();
-        const mode = typeof m === 'object' && m?.mode === 'with_leader' ? 'with_leader' : 'solo';
-        if (mName) {
-          memberTeamMap[normalizeKhmerStr(mName)] = {
-            groupName: gName,
-            groupId: grp.id,
-            leaderName: lName,
-            commissionLeader: commLeader,
-            memberName: mName,
-            mode: mode,
-          };
-          if (mode === 'with_leader') {
-            withLeaderMembers.push(mName);
+  const bot = new TelegramBot(token, {
+    polling: {
+      interval: 300,
+      autoStart: true,
+      params: { timeout: 10 },
+    },
+  });
+
+  console.log(`🤖 [${shopName}] Telegram Bot is RUNNING! Target collection: ${ordersCol}`);
+
+  bot.on('polling_error', (err) => {
+    console.log(`[${shopName} Polling notice]:`, err.code || err.message);
+  });
+
+  bot.on('error', (err) => {
+    console.log(`[${shopName} Error]:`, err.message);
+  });
+
+  let cachedSellers = [];
+
+  async function loadSellersFromDb() {
+    try {
+      const docSnap = await getDoc(doc(dbOrders, metadataCol, 'sellers'));
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (Array.isArray(data.names)) {
+          cachedSellers = data.names.map((item) => {
+            if (typeof item === 'object' && item !== null) {
+              return {
+                name: item.name,
+                role: item.role || 'seller',
+                salary: typeof item.salary === 'number' ? item.salary : (item.role === 'staff' ? 250 : 0),
+              };
+            }
+            return { name: String(item), role: 'seller', salary: 0 };
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`[${shopName}] Error loading sellers:`, err.message);
+    }
+  }
+
+  loadSellersFromDb();
+
+  async function getNextOrderNumber(isTeamUnitsOnly = false) {
+    try {
+      if (isTeamUnitsOnly) {
+        const snap = await getDocs(collection(dbTeamUnits, 'team_units_records'));
+        return snap.size + 1;
+      }
+      const snap = await getDocs(collection(dbOrders, ordersCol));
+      return snap.size + 1;
+    } catch (e) {
+      return Math.floor(Math.random() * 900) + 100;
+    }
+  }
+
+  // Independent Check for Database 1 (dbOrders / App 1)
+  async function checkExistsInDb1({ customerPhone, destination, provinceId, date }) {
+    if (!customerPhone || !date) return null;
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    const normNewDest = (destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
+
+    try {
+      const q1 = query(collection(dbOrders, ordersCol), where('date', '==', date));
+      const snap1 = await getDocs(q1);
+      for (const docSnap of snap1.docs) {
+        const existing = docSnap.data();
+        const existPhone = (existing.customerPhone || '').replace(/\D/g, '');
+        const phoneMatches = existPhone && cleanPhone && (
+          existPhone === cleanPhone ||
+          existPhone.endsWith(cleanPhone) ||
+          cleanPhone.endsWith(existPhone)
+        );
+        if (phoneMatches) {
+          const provMatch = existing.provinceId && provinceId && existing.provinceId === provinceId;
+          const normExistDest = (existing.destination || '').replace(/[\s,\-_.:៖]+/g, '').toLowerCase();
+          const destMatch = normNewDest && normExistDest && (
+            normNewDest.includes(normExistDest) ||
+            normExistDest.includes(normNewDest)
+          );
+          if (provMatch || destMatch) {
+            return { id: docSnap.id, ...existing };
           }
         }
+      }
+    } catch (err) {
+      console.error(`[${shopName}] Error checking duplicate in dbOrders:`, err.message);
+    }
+    return null;
+  }
+
+  // Independent Check for Database 2 (dbTeamUnits / App 2)
+  async function checkExistsInDb2({ customerPhone, date }) {
+    if (!customerPhone || !date) return null;
+    const cleanPhone = customerPhone.replace(/\D/g, '');
+    try {
+      const q2 = query(collection(dbTeamUnits, 'team_units_records'), where('date', '==', date));
+      const snap2 = await getDocs(q2);
+      for (const docSnap of snap2.docs) {
+        const existing = docSnap.data();
+        const existPhone = (existing.customerPhone || '').replace(/\D/g, '');
+        if (existPhone && cleanPhone && (existPhone === cleanPhone || existPhone.endsWith(cleanPhone) || cleanPhone.endsWith(existPhone))) {
+          return { id: docSnap.id, ...existing };
+        }
+      }
+    } catch (err) {
+      console.error(`[${shopName}] Error checking duplicate in dbTeamUnits:`, err.message);
+    }
+    return null;
+  }
+
+  // COMMAND: /start or /help
+  bot.onText(/\/(start|help)(@\w+)?/i, (msg) => {
+    const chatId = msg.chat.id;
+    const helpText = `👋 ជំរាបសួរ! ខ្ញុំជា Bot សម្រាប់កត់ត្រាទិន្នន័យលក់។
+
+📝 គោលការណ៍កត់ត្រាទិន្នន័យ៖
+1️⃣ **Database 1 (seth-3aa05):** កត់ត្រាសម្រាប់តែ **Team ស៊ីង អ៊ី** ប៉ុណ្ណោះ!
+2️⃣ **Database 2 (team-units-db):** កត់ត្រាសម្រាប់ **គ្រប់ក្រុមទាំងអស់** (Team ស៊ីង អ៊ី + ក្រុមដទៃ)!
+
+📌 ដំណើរការឆ្លាតវៃ (Smart Sync)៖
+- សម្រាប់ Team ស៊ីង អ៊ី: Bot នឹងបង្ហាញប៊ូតុងឈ្មោះកូនក្រុមឱ្យចុចរើសភ្លាមៗ ហើយរក្សាទុកទាំងក្នុង Database 1 និង Database 2។
+- សម្រាប់ Team ផ្សេងទៀត (ឧ. ឡា បុប្ផា, ហ៊ុន ចាន់ធី...): Bot នឹងកត់ត្រាស្វ័យប្រវត្តិចូល **Database 2 តែមួយប៉ុណ្ណោះ** មិនច្រឡំចូល Database 1 ឡើយ!`;
+
+    bot.sendMessage(chatId, helpText);
+  });
+
+  // COMMAND: /sellers
+  bot.onText(/\/sellers(@\w+)?/i, async (msg) => {
+    const chatId = msg.chat.id;
+    await loadTeamUnitsGroups();
+    if (cachedTeamGroups.length === 0) {
+      return bot.sendMessage(chatId, '📭 មិនទាន់មានក្រុមអ្នកលក់ក្នុងបញ្ជីនៅឡើយទេ។');
+    }
+
+    let text = `👥 បញ្ជីក្រុម និងអ្នកលក់ (Database 2)៖\n\n`;
+    cachedTeamGroups.forEach((grp, idx) => {
+      text += `🏢 ${idx + 1}. ${grp.name} (មេក្រុម: ${grp.leaderName})\n`;
+      (grp.members || []).forEach((mem) => {
+        text += `   └ 💼 ${mem.name} (${mem.role})\n`;
       });
-    }
+      text += '\n';
+    });
+    bot.sendMessage(chatId, text);
+  });
 
-    if (lName) {
-      const allMembers = Array.isArray(grp.members)
-        ? grp.members.map((m) => (typeof m === 'string' ? m.trim() : (m?.name || '').trim())).filter(Boolean)
-        : [];
-      const effectiveWithLeader = withLeaderMembers.length > 0 ? withLeaderMembers : allMembers;
+  // COMMAND: /today
+  bot.onText(/\/today(@\w+)?/i, async (msg) => {
+    const chatId = msg.chat.id;
+    const today = getKhmerToday();
+    try {
+      const q = query(collection(dbOrders, ordersCol), where('date', '==', today));
+      const snap = await getDocs(q);
+      let totalRevenue = 0;
+      let totalProfit = 0;
+      let totalTubes = 0;
+      let paidCount = 0;
+      let paidAmount = 0;
+      let unpaidCount = 0;
+      let unpaidAmount = 0;
 
-      const leaderObj = {
-        group: grp,
-        leaderName: lName,
-        commissionLeader: commLeader,
-        withLeaderMembers: effectiveWithLeader,
-      };
-      leaderTeamMap[normalizeKhmerStr(lName)] = leaderObj;
-      if (commLeader && commLeader !== lName) {
-        leaderTeamMap[normalizeKhmerStr(commLeader)] = leaderObj;
-      }
-      if (gName) {
-        leaderTeamMap[normalizeKhmerStr(gName)] = leaderObj;
-      }
+      snap.forEach((d) => {
+        const data = d.data();
+        const price = Number(data.price || 0);
+        totalRevenue += price;
+        totalProfit += Number(data.orderProfit || 0);
+        totalTubes += Number(data.tubes || 0);
+
+        if (data.paymentStatus === 'paid') {
+          paidCount += 1;
+          paidAmount += price;
+        } else {
+          unpaidCount += 1;
+          unpaidAmount += price;
+        }
+      });
+
+      const msgText = `📊 របាយការណ៍លក់ថ្ងៃនេះ (${today}) [Team ស៊ីង អ៊ី - Database 1]៖
+----------------------------------
+📦 ចំនួនកុម្ម៉ង់សរុប: ${snap.size} កុម្ម៉ង់
+🧪 ចំនួនទីបសរុប: ${totalTubes} ទីប
+🟢 បានទូទាត់: ${paidCount} នាក់ ($${paidAmount.toFixed(0)})
+🟠 មិនទាន់ទូទាត់: ${unpaidCount} នាក់ ($${unpaidAmount.toFixed(0)})
+💵 ចំណូលសរុប: $${totalRevenue.toFixed(2)}
+💰 ចំណេញសុទ្ធ: $${totalProfit.toFixed(2)}
+----------------------------------
+ទិន្នន័យបាន Sync ជាមួយ App Boost Tracker ផ្ទាល់!`;
+
+      bot.sendMessage(chatId, msgText);
+    } catch (e) {
+      bot.sendMessage(chatId, `⚠️ មិនអាចទាញទិន្នន័យបាន: ${e.message}`);
     }
   });
 
-  console.log(`[Bot Sync] Realtime Teams: ${groups.length} groups, ${Object.keys(memberTeamMap).length} members mapped.`);
-}
+  const pendingOrders = new Map();
 
-async function loadMetadata() {
-  if (!db) return;
-  try {
-    const sSnap = await getDoc(doc(db, 'metadata', 'sellers'));
-    if (sSnap.exists() && Array.isArray(sSnap.data().names)) {
-      cachedSellers = sSnap.data().names;
-    }
-    const tSnap = await getDoc(doc(db, 'metadata', 'teams'));
-    if (tSnap.exists() && Array.isArray(tSnap.data().groups)) {
-      updateTeamsState(tSnap.data().groups);
-    }
-  } catch (err) {
-    console.error('Error in loadMetadata:', err.message);
-  }
-}
+  // MESSAGE HANDLER
+  bot.on('message', async (msg) => {
+    if (!msg.text || msg.text.startsWith('/')) return;
 
-function listenMetadataRealtime() {
-  if (!db) return;
-  try {
-    onSnapshot(doc(db, 'metadata', 'sellers'), (snap) => {
-      if (snap.exists() && Array.isArray(snap.data().names)) {
-        cachedSellers = snap.data().names;
-        console.log(`[Bot Sync] Realtime Sellers: ${cachedSellers.length} sellers.`);
-      }
-    });
+    const text = msg.text.trim();
+    const isTemplate = /ទីតាំង|អ្នកទទួល|ចំនួន|ដាក់តាម|អ្នកលក់/i.test(text);
+    if (!isTemplate) return;
 
-    onSnapshot(doc(db, 'metadata', 'teams'), (snap) => {
-      if (snap.exists() && Array.isArray(snap.data().groups)) {
-        updateTeamsState(snap.data().groups);
-      }
-    });
-  } catch (err) {
-    console.error('Error attaching realtime metadata listeners:', err.message);
-  }
-}
-listenMetadataRealtime();
+    const chatId = msg.chat.id;
 
-async function getNextOrderNumber() {
-  if (!db) return Math.floor(Math.random() * 900) + 100;
-  try {
-    const snap = await getDocs(collection(db, 'orders'));
-    return snap.size + 1;
-  } catch (e) {
-    return Math.floor(Math.random() * 900) + 100;
-  }
-}
-
-async function checkDuplicateOrder({ customerPhone, destination, date }) {
-  if (!db || !customerPhone || !date) return null;
-  const cleanPhone = customerPhone.replace(/\D/g, '');
-  try {
-    const q = query(collection(db, 'orders'), where('date', '==', date));
-    const snap = await getDocs(q);
-    for (const d of snap.docs) {
-      const existing = d.data();
-      const existPhone = (existing.customerPhone || '').replace(/\D/g, '');
-      if (existPhone && cleanPhone && (existPhone === cleanPhone || existPhone.endsWith(cleanPhone) || cleanPhone.endsWith(existPhone))) {
-        return { id: d.id, ...existing };
-      }
-    }
-  } catch (err) {
-    console.error('Error checking duplicate:', err.message);
-  }
-  return null;
-}
-
-// ----------------------------------------------------
-// Bot Commands
-// ----------------------------------------------------
-bot.onText(/\/(start|help)(@\w+)?/i, (msg) => {
-  const helpText = `👋 ជំរាបសួរ! ខ្ញុំជា Bot កត់ត្រាការលក់ (Boost & Sales Tracker Bot)។
-
-📝 ដំណើរការ៖
-Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្តិនៅពេលលោកអ្នកបោះទម្រង់សារកត់ត្រាការលក់ចូលក្នុងគ្រុប ហើយបញ្ជូនទៅកាន់ Database ភ្លាមៗ!
-
-🔍 បញ្ជាដែលមាន៖
-/sellers - មើលបញ្ជីឈ្មោះអ្នកលក់
-/report - មើលរបាយការណ៍លក់សរុបថ្ងៃនេះ
-/help - របៀបប្រើប្រាស់`;
-  bot.sendMessage(msg.chat.id, helpText);
-});
-
-bot.onText(/\/(ping|test)(@\w+)?/i, (msg) => {
-  const status = `🏓 <b>Pong!</b> @puseth_sales_bot ដំណើរការធម្មតា ២៤/៧!
-
-✅ <b>Firebase Connection:</b> ${db ? 'ភ្ជាប់ជោគជ័យ (Connected)' : 'បរាជ័យ (Not Connected)'}
-👥 <b>អ្នកលក់ក្នុងបញ្ជី:</b> ${cachedSellers.length} នាក់
-🏢 <b>ក្រុមការងារ:</b> ${cachedGroups.length} ក្រុម
-⏰ <b>ម៉ោងដំណើរការ:</b> ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Phnom_Penh' })}`;
-
-  bot.sendMessage(msg.chat.id, status, { parse_mode: 'HTML' });
-});
-
-bot.onText(/\/sellers(@\w+)?/i, async (msg) => {
-  await loadMetadata();
-  if (cachedSellers.length === 0) {
-    return bot.sendMessage(msg.chat.id, '📭 មិនទាន់មានឈ្មោះអ្នកលក់ក្នុងបញ្ជីនៅឡើយទេ។');
-  }
-  let text = `👥 បញ្ជីឈ្មោះអ្នកលក់ក្នុងប្រព័ន្ធ៖\n\n`;
-  cachedSellers.forEach((s, idx) => {
-    const name = typeof s === 'string' ? s : s.name;
-    const role = typeof s === 'string' ? '' : ` (${s.role || 'អ្នកលក់'})`;
-    text += `${idx + 1}. ${name}${role}\n`;
-  });
-  bot.sendMessage(msg.chat.id, text);
-});
-
-bot.onText(/\/report(@\w+)?/i, async (msg) => {
-  if (!db) return;
-  const today = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Phnom_Penh',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
-
-  try {
-    const q = query(collection(db, 'orders'), where('date', '==', today));
-    const snap = await getDocs(q);
-    const count = snap.size;
-    let totalRevenue = 0;
-    let totalTubes = 0;
-    let paidCount = 0;
-
-    snap.docs.forEach((d) => {
-      const data = d.data();
-      totalRevenue += data.price || 0;
-      totalTubes += data.tubes || 0;
-      if (data.paymentStatus === 'paid') paidCount++;
-    });
-
-    const report = `📊 របាយការណ៍លក់ប្រចាំថ្ងៃ (${today})៖
------------------------------------------
-📦 ចំនួន Order សរុប: ${count}
-🧪 ចំនួនទីប/កំប៉ុងសរុប: ${totalTubes}
-💰 ប្រាក់ចំណូលសរុប: $${totalRevenue.toLocaleString()}
-🟢 បានទូទាត់: ${paidCount} / ${count} Orders
-🟠 មិនទាន់ទូទាត់: ${count - paidCount} Orders
------------------------------------------`;
-    bot.sendMessage(msg.chat.id, report);
-  } catch (err) {
-    bot.sendMessage(msg.chat.id, `❌ មិនអាចទាញរបាយការណ៍បាន: ${err.message}`);
-  }
-});
-
-// ----------------------------------------------------
-// Order Message Handler (Core Matching & Auto-Save)
-// ----------------------------------------------------
-bot.on('message', async (msg) => {
-  if (!msg.text || msg.text.startsWith('/')) return;
-
-  const text = msg.text.trim();
-  const isTemplate = /ទីតាំង|អ្នកទទួល|ចំនួន|ដាក់តាម|អ្នកលក់/i.test(text);
-  if (!isTemplate) return;
-
-  const chatId = msg.chat.id;
-
-  try {
+    try {
     const orderBlocks = splitOrderBlocks(text);
-
-    for (const block of orderBlocks) {
-      const parsed = parseOrderText(block);
-      if (!parsed || !parsed.customerPhone || parsed.customerPhone === 'N/A') continue;
-
-      await loadMetadata();
-
-      // Duplicate Check
-      const dup = await checkDuplicateOrder({
-        customerPhone: parsed.customerPhone,
-        destination: parsed.destination,
-        date: parsed.date,
+    if (orderBlocks.length > 1) {
+      console.log(`[Batch Mode] Detected ${orderBlocks.length} orders in single message!`);
+      await bot.sendMessage(chatId, `⏳ កំពុងដំណើរការកត់ត្រា ${orderBlocks.length} កុម្ម៉ង់ក្នុងពេលតែមួយ (Bulk Mode)... សូមរង់ចាំបន្តិច!`, {
+        reply_to_message_id: msg.message_id,
       });
 
-      if (dup) {
-        const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយ (ទិន្នន័យស្ទួន)!
------------------------------------------
-📞 លេខភ្ញៀវ: ${dup.customerPhone}
-📍 ទីតាំង: ${dup.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
-📅 កាលបរិច្ឆេទ: ${dup.date}
-👨‍💼 អ្នកលក់: ${dup.sellerName || 'N/A'}
-🛍️ ឈុត: ${dup.tubes || parsed.pkg.tubes} ទីប ($${dup.price || parsed.pkg.price})
------------------------------------------
-👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+      await loadTeamUnitsGroups();
+      await loadSellersFromDb();
 
-        return bot.sendMessage(chatId, dupMsg, {
-          reply_to_message_id: msg.message_id,
+      let successCount = 0;
+      let dupCount = 0;
+      let totalTubes = 0;
+      let totalRevenue = 0;
+      const summaryItems = [];
+
+      for (let i = 0; i < orderBlocks.length; i++) {
+        const block = orderBlocks[i];
+        const parsed = parseOrderText(block);
+        if (!parsed || !parsed.customerPhone) continue;
+
+        const isSingEu = parsed.isSingEuTeam ||
+          isSingEuLeader(parsed.sellerName) ||
+          isSingEuLeader(parsed.sellerRaw) ||
+          isSingEuMemberOrTeam(parsed.sellerName, parsed.teamLeader);
+
+        const dupDb2 = await checkExistsInDb2({
+          customerPhone: parsed.customerPhone,
+          date: parsed.date,
         });
-      }
 
-      // Check if sellerName is explicit in message
-      const hasExplicitSeller = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' && parsed.sellerName.trim().length > 0;
-
-      if (hasExplicitSeller) {
-        const rawSeller = parsed.sellerName.trim();
-        const normSeller = normalizeKhmerStr(rawSeller);
-
-        const memberInfo = memberTeamMap[normSeller];
-        const leaderInfo = leaderTeamMap[normSeller];
-
-        let resolvedTeamLeader = parsed.teamLeader || 'ឡា ធីតា';
-        let resolvedTeamGroup = '';
-
-        if (memberInfo) {
-          resolvedTeamLeader = memberInfo.leaderName || resolvedTeamLeader;
-          resolvedTeamGroup = memberInfo.groupName || '';
-        } else if (leaderInfo) {
-          resolvedTeamLeader = leaderInfo.leaderName;
-          resolvedTeamGroup = leaderInfo.group?.name || '';
+        if (dupDb2) {
+          dupCount++;
+          summaryItems.push(`⚠️ ${i + 1}. 📞 ${parsed.customerPhone} (ស្ទួន - បានកត់រួចហើយ)`);
+          continue;
         }
 
-        // Auto-record order immediately!
-        const orderNumber = await getNextOrderNumber();
+        const resolved = await resolveTeamMember(parsed.sellerName, parsed.teamLeader || parsed.teamLeaderRaw);
+        const orderNumber = await getNextOrderNumber(true);
         const completeOrder = buildCompleteOrder({
           parsed,
           orderNumber,
-          sellerRole: 'seller',
+          sellerRole: resolved.role === 'មេក្រុម' ? 'seller' : 'seller',
           paymentStatus: parsed.paymentStatus || 'unpaid',
-          teamLeader: resolvedTeamLeader,
+          teamLeader: resolved.groupName,
+        });
+        completeOrder.sellerName = resolved.sellerName;
+        completeOrder.teamLeader = resolved.groupName;
+
+        if (isSingEu) {
+          await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+        }
+        await syncToTeamUnitsDb({
+          completeOrder,
+          resolvedMember: resolved,
+          tubes: completeOrder.tubes,
+          cans: completeOrder.cans,
         });
 
-        completeOrder.sellerName = rawSeller;
-        completeOrder.actualSeller = rawSeller;
-        completeOrder.teamGroup = resolvedTeamGroup;
-        completeOrder.commissionSeller = null;
-        completeOrder.sellerCommission = 0;
-        completeOrder.isCommissionSale = false;
+        successCount++;
+        totalTubes += completeOrder.tubes || 0;
+        totalRevenue += completeOrder.price || 0;
 
-        await saveOrderToFirestore(completeOrder);
+        summaryItems.push(`✅ ${i + 1}. 📞 ${completeOrder.customerPhone} | 👨‍💼 ${completeOrder.sellerName} (${resolved.groupName}) | 🛍️ ${completeOrder.tubes} ទីប (${completeOrder.price})`);
+      }
 
-        // If this seller is a team leader AND has members configured as 'with_leader' (លក់ឱ្យមេក្រុមផង)
-        if (leaderInfo && leaderInfo.withLeaderMembers && leaderInfo.withLeaderMembers.length > 0) {
-          const pkgTitle = completeOrder.packageId === 'combo_1_1'
-            ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-            : `ឈុត ${completeOrder.tubes} ទីប`;
-
-          const advisorLine = completeOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${completeOrder.advisorPhone}` : '';
-          const productTypeLine = completeOrder.productType ? `\n🏷️ ប្រភេទ: ${completeOrder.productType}` : '';
-
-          const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
+      const reportMsg = `🎉 បានកត់ត្រា ${successCount} កុម្ម៉ង់ដោយជោគជ័យក្នុងពេលតែមួយ! [Bulk Batch]
 -----------------------------------------
-📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
-📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
-🏢 ម្ចាស់ Order (មេក្រុម): ${completeOrder.sellerName}${resolvedTeamGroup ? ` (${resolvedTeamGroup})` : ''}
+📦 កុម្ម៉ង់ទាំងអស់: ${orderBlocks.length} | ជោគជ័យ: ${successCount} | ស្ទួន: ${dupCount}
+🧪 ទីបសរុប: ${totalTubes} ទីប
+💵 តម្លៃសរុប: ${totalRevenue}
 -----------------------------------------
-👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ៖`;
+📋 បញ្ជីកុម្ម៉ង់លម្អិត:
+${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... និង ${summaryItems.length - 35} ទៀត` : ''}
+-----------------------------------------
+📲 ទិន្នន័យទាំងអស់បានចូលក្នុង App ទី ២ រួចរាល់!`;
 
-          console.log(`[Commission Prompt] #${orderNumber} for leader: ${completeOrder.sellerName} (${leaderInfo.withLeaderMembers.length} with_leader members)`);
+      return bot.sendMessage(chatId, reportMsg, { reply_to_message_id: msg.message_id });
+    }
 
-          return bot.sendMessage(chatId, promptMsg, {
+      const parsed = parseOrderText(text);
+      if (!parsed || !parsed.customerPhone) {
+        return bot.sendMessage(
+          chatId,
+          '⚠️ រកមិនឃើញលេខទូរស័ព្ទភ្ញៀវ ឬទិន្នន័យមិនត្រឹមត្រូវ។ សូមពិនិត្យទម្រង់សារឡើងវិញ!',
+          { reply_to_message_id: msg.message_id }
+        );
+      }
+
+      // Load hierarchies
+      await loadTeamUnitsGroups();
+      await loadSellersFromDb();
+
+      // Independent Check for existence in Database 1 and Database 2
+      const dupDb1 = await checkExistsInDb1({
+        customerPhone: parsed.customerPhone,
+        destination: parsed.destination,
+        provinceId: parsed.provinceId,
+        date: parsed.date,
+      });
+
+      const dupDb2 = await checkExistsInDb2({
+        customerPhone: parsed.customerPhone,
+        date: parsed.date,
+      });
+
+      // Detect if message belongs to Team Sing Eu
+      const isSingEu = parsed.isSingEuTeam ||
+        isSingEuLeader(parsed.sellerName) ||
+        isSingEuLeader(parsed.sellerRaw) ||
+        isSingEuMemberOrTeam(parsed.sellerName, parsed.teamLeader);
+
+      // ====================================================
+      // CASE 1: OTHER TEAMS DETECTED (AUTO-RECORD)
+      // e.g. ឡា បុប្ផា, ហ៊ុន ចាន់ធី, Bopha... (NOT Team Sing Eu)
+      // ⚠️ RULE: RECORD ONLY INTO DATABASE 2 (team-units-db)!
+      // DO NOT WRITE INTO DATABASE 1!
+      // ====================================================
+      if (!isSingEu && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
+        if (dupDb2) {
+          const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយក្នុង App ទី ២ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${dupDb2.customerPhone}
+📍 ទីតាំង: ${dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dupDb2.date}
+👨‍💼 អ្នកលក់: ${dupDb2.sellerName || 'N/A'}
+🛍️ ឈុត: ${dupDb2.tubes || parsed.pkg.tubes} ទីប
+-----------------------------------------
+👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+
+          return bot.sendMessage(chatId, dupMsg, {
             reply_to_message_id: msg.message_id,
-            reply_markup: {
-              inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, leaderInfo),
-            },
           });
         }
+
+        const resolved = await resolveTeamMember(parsed.sellerName, parsed.teamLeader || parsed.teamLeaderRaw);
+        const orderNumber = await getNextOrderNumber(true);
+        const completeOrder = buildCompleteOrder({
+          parsed,
+          orderNumber,
+          sellerRole: resolved.role === 'មេក្រុម' ? 'seller' : 'seller',
+          paymentStatus: parsed.paymentStatus || 'unpaid',
+          teamLeader: resolved.groupName,
+        });
+        completeOrder.sellerName = resolved.sellerName;
+        completeOrder.teamLeader = resolved.groupName;
+
+        // 🌟 ONLY SAVE TO DATABASE 2 (team-units-db) as instructed by user!
+        await syncToTeamUnitsDb({
+          completeOrder,
+          resolvedMember: resolved,
+          tubes: completeOrder.tubes,
+          cans: completeOrder.cans,
+        });
 
         const payBadge = completeOrder.paymentStatus === 'paid'
           ? `🟢 បានទូទាត់ ($${completeOrder.price})`
@@ -581,369 +1042,484 @@ bot.on('message', async (msg) => {
           ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
           : `${completeOrder.tubes} ទីប`;
 
-        const advisorLine = completeOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${completeOrder.advisorPhone}` : '';
-        const productTypeLine = completeOrder.productType ? `\n🏷️ ប្រភេទ: ${completeOrder.productType}` : '';
+        const unassignedNotice = resolved.isUnassigned
+          ? `\n💡 ចំណាំ: ឈ្មោះ «${completeOrder.sellerName}» មិនទាន់មានក្រុមក្នុងប្រព័ន្ធទេ! Bot បានដាក់ចូលក្នុង «មិនទាន់មានក្រុម» ជាបណ្ដោះអាសន្ន។ លោកអ្នកអាចចូលទៅផ្ទេរគាត់ចូលក្រុមត្រឹមត្រូវក្នុង App ទី ២ បានគ្រប់ពេល!`
+          : '';
 
-        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber})
+        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [App ទី ២: Team Units Tracker]
 -----------------------------------------
-📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
+📞 ភ្ញៀវ: ${completeOrder.customerPhone}
 📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
 🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
-🏢 ក្រុម: ${completeOrder.teamLeader}
+👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${resolved.role}]
+🏢 ក្រុម: ${resolved.groupName}
 🧪 ចំនួនលក់: ${unitsDetail}
-💳 ស្ថានភាពទូទាត់: ${payBadge}
-💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
+📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!${unassignedNotice}
+👉 សូមផ្ទៀងផ្ទាត់ការកុម្ម៉ង់ខាងក្រោម៖`;
 
-        console.log(`[Order Saved] #${orderNumber} for seller: ${completeOrder.sellerName} (${completeOrder.teamLeader})`);
+        console.log(`[Database 2 Only Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
 
         return bot.sendMessage(chatId, successMsg, {
           reply_to_message_id: msg.message_id,
           reply_markup: {
-            inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, completeOrder.paymentStatus, true),
+            inline_keyboard: getApp2ConfirmInlineKeyboard(completeOrder.id),
           },
         });
-      } else {
-        // Seller not specified: prompt keyboard with sellers to pick
-        const pendingId = `p${Date.now().toString(36)}`;
-        pendingOrders.set(pendingId, {
-          parsed,
-          chatId,
-          originalMsgId: msg.message_id,
-          createdAt: Date.now(),
-        });
+      }
 
-        setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
-
-        const keyboardRows = [];
-        let currentRow = [];
-
-        cachedSellers.slice(0, 14).forEach((s, idx) => {
-          const sName = typeof s === 'string' ? s : s.name;
-          currentRow.push({
-            text: `💼 ${sName}`,
-            callback_data: `pick_${pendingId}_${idx}`,
-          });
-
-          if (currentRow.length === 2) {
-            keyboardRows.push(currentRow);
-            currentRow = [];
-          }
-        });
-
-        if (currentRow.length > 0) keyboardRows.push(currentRow);
-        keyboardRows.push([{ text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` }]);
-
-        const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់!
+      // ====================================================
+      // CASE 2: TEAM SING EU (OR UNKNOWN SELLER)
+      // Must prompt buttons with team members so user picks!
+      // SMART SYNC RULE:
+      // If BOTH App 1 and App 2 have it -> reject as duplicate!
+      // If App 1 does NOT have it (even if App 2 has it) -> ACCEPT and save to App 1!
+      // If App 2 does NOT have it (even if App 1 has it) -> ACCEPT and save to App 2!
+      // ====================================================
+      if (dupDb1 && dupDb2) {
+        const dupMsg = `⚠️ ការកុម្ម៉ង់នេះមានរួចរាល់ទាំងក្នុង App 1 និង App 2 ហើយ (ទិន្នន័យស្ទួន)!
 -----------------------------------------
-📞 ភ្ញៀវ: ${parsed.customerPhone}
-📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុត: ${parsed.pkg.nameKm} ($${parsed.pkg.price})
+📞 លេខភ្ញៀវ: ${dupDb1.customerPhone || dupDb2.customerPhone}
+📍 ទីតាំង: ${dupDb1.destination || dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dupDb1.date || dupDb2.date}
+👨‍💼 អ្នកលក់: ${dupDb1.sellerName || dupDb2.sellerName || 'N/A'}
+🛍️ ឈុត: ${dupDb1.tubes || dupDb2.tubes || parsed.pkg.tubes} ទីប
 -----------------------------------------
-👉 សូមជ្រើសរើសឈ្មោះអ្នកលក់ដើម្បីកត់ត្រា៖`;
+👉 ទាំង App 1 និង App 2 សុទ្ធតែមានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
 
-        return bot.sendMessage(chatId, promptMsg, {
+        return bot.sendMessage(chatId, dupMsg, {
           reply_to_message_id: msg.message_id,
-          reply_markup: { inline_keyboard: keyboardRows },
         });
       }
+
+      const singEuGroup = cachedTeamGroups.find((g) => g.id === 'group_sing_e') || {
+        id: 'group_sing_e',
+        name: 'Team ស៊ីង អ៊ី',
+        leaderName: 'ស៊ីង អ៊ី',
+        leaderRole: 'មេក្រុម',
+        members: [
+          { name: 'ស្រី កា', role: 'កូនក្រុម' },
+          { name: 'ពូ ពន្លក', role: 'កូនក្រុម' },
+          { name: 'ស្រី នួ', role: 'កូនក្រុម' },
+          { name: 'ចៃ ញ៉ាញ់', role: 'កូនក្រុម' },
+        ],
+      };
+
+      // Construct seller options
+      const teamSingEuMembers = [
+        { name: singEuGroup.leaderName || 'ស៊ីង អ៊ី', role: 'មេក្រុម', groupId: singEuGroup.id, groupName: singEuGroup.name },
+        ...(singEuGroup.members || []).map((m) => ({
+          name: m.name,
+          role: m.role || 'កូនក្រុម',
+          groupId: singEuGroup.id,
+          groupName: singEuGroup.name,
+        })),
+      ];
+
+      // Auto-merge any sellers added in App 1 (seth-3aa05 metadata/sellers)
+      for (const app1Seller of cachedSellers) {
+        if (!app1Seller || !app1Seller.name || app1Seller.name === 'ទូទៅ' || app1Seller.name.includes('ស៊ីង') || app1Seller.name.includes('សុីង')) continue;
+        const cleanName = app1Seller.name.trim();
+        const alreadyIn = teamSingEuMembers.some(
+          (m) => normalizeKhmer(m.name) === normalizeKhmer(cleanName)
+        );
+        if (!alreadyIn) {
+          teamSingEuMembers.push({
+            name: cleanName,
+            role: app1Seller.role === 'staff' ? 'បុគ្គលិក' : 'កូនក្រុម',
+            groupId: singEuGroup.id,
+            groupName: singEuGroup.name,
+          });
+        }
+      }
+
+      const pendingId = `p${Date.now().toString(36)}`;
+      pendingOrders.set(pendingId, {
+        parsed,
+        sellers: teamSingEuMembers,
+        chatId,
+        originalMsgId: msg.message_id,
+        createdAt: Date.now(),
+        alreadyInDb1: !!dupDb1,
+        alreadyInDb2: !!dupDb2,
+      });
+
+      setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
+
+      // Build inline buttons for Team Sing Eu
+      const keyboardRows = [];
+      let currentRow = [];
+
+      teamSingEuMembers.forEach((m, idx) => {
+        const icon = m.role === 'មេក្រុម' ? '👑' : '💼';
+        const roleLabel = m.role === 'មេក្រុម' ? '(មេក្រុម)' : '';
+        currentRow.push({
+          text: `${icon} ${m.name} ${roleLabel}`.trim(),
+          callback_data: `pick_${pendingId}_${idx}`,
+        });
+
+        if (currentRow.length === 2) {
+          keyboardRows.push(currentRow);
+          currentRow = [];
+        }
+      });
+
+      if (currentRow.length > 0) {
+        keyboardRows.push(currentRow);
+      }
+
+      keyboardRows.push([
+        { text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` },
+      ]);
+
+      const deliveryTypeBadge = parsed.deliveryMethod === 'moto'
+        ? `ម៉ូតូ ($${parsed.deliveryFee})`
+        : parsed.companyDeliveryType === 'jt'
+        ? `ក្រុមហ៊ុន J&T ($${parsed.deliveryFee})`
+        : parsed.companyDeliveryType === 'cod'
+        ? `ក្រុមហ៊ុន COD ($${parsed.deliveryFee})`
+        : `ក្រុមហ៊ុន ធម្មតា ($${parsed.deliveryFee})`;
+
+      let syncNotice = '';
+      if (dupDb2 && !dupDb1) {
+        syncNotice = '\n💡 (ចំណាំ: ក្នុង App 2 មានទិន្នន័យនេះរួចហើយ Bot នឹងបញ្ចូលតែទៅក្នុង App 1 ប៉ុណ្ណោះ)';
+      } else if (dupDb1 && !dupDb2) {
+        syncNotice = '\n💡 (ចំណាំ: ក្នុង App 1 មានទិន្នន័យនេះរួចហើយ Bot នឹងបញ្ចូលតែទៅក្នុង App 2 ប៉ុណ្ណោះ)';
+      }
+
+      const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! [Team ស៊ីង អ៊ី]${syncNotice}
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${parsed.customerPhone}
+📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
+🛍️ ឈុតទំនិញ: ${parsed.pkg.nameKm} ($${parsed.pkg.price})
+🚚 សេវាដឹក: ${deliveryTypeBadge}
+📅 កាលបរិច្ឆេទ: ${parsed.date}
+-----------------------------------------
+👉 សម្រាប់ Team ស៊ីង អ៊ី សូមជ្រើសរើសឈ្មោះ «អ្នកលក់» ពិតប្រាកដខាងក្រោម៖`;
+
+      bot.sendMessage(chatId, promptMsg, {
+        reply_to_message_id: msg.message_id,
+        reply_markup: {
+          inline_keyboard: keyboardRows,
+        },
+      });
+    } catch (err) {
+      console.error(`[${shopName}] Error processing order message:`, err);
+      bot.sendMessage(
+        chatId,
+        `❌ មានបញ្ហាក្នុងការកត់ត្រា៖ ${err.message}`,
+        { reply_to_message_id: msg.message_id }
+      );
     }
-  } catch (err) {
-    console.error('Error processing message:', err);
-  }
-});
+  });
 
-// ----------------------------------------------------
-// Callback Query Handler (Payment Toggle & Seller Pick)
-// ----------------------------------------------------
-bot.on('callback_query', async (queryMsg) => {
-  const data = queryMsg.data;
-  if (!data) return;
+  // CALLBACK QUERY HANDLER
+  bot.on('callback_query', async (queryMsg) => {
+    const data = queryMsg.data;
+    if (!data) return;
 
-  const chatId = queryMsg.message.chat.id;
-  const messageId = queryMsg.message.message_id;
+    const chatId = queryMsg.message.chat.id;
+    const messageId = queryMsg.message.message_id;
 
-  // 1. Cancel
-  if (data.startsWith('cancel_')) {
-    const pendingId = data.replace('cancel_', '');
-    pendingOrders.delete(pendingId);
-    bot.answerCallbackQuery(queryMsg.id, { text: 'បានបោះបង់ការកត់ត្រា' });
-    return bot.editMessageText('❌ បានបោះបង់ការកត់ត្រាកុម្ម៉ង់នេះ។', {
-      chat_id: chatId,
-      message_id: messageId,
-    });
-  }
-
-  // 2. Pick Seller
-  if (data.startsWith('pick_')) {
-    const parts = data.split('_');
-    const pendingId = parts[1];
-    const sellerIdx = parseInt(parts[2], 10);
-
-    const pending = pendingOrders.get(pendingId);
-    if (!pending) {
-      return bot.answerCallbackQuery(queryMsg.id, {
-        text: 'ទិន្នន័យនេះបានកត់ត្រារួចហើយ ឬផុតកំណត់!',
-        show_alert: true,
+    if (data.startsWith('cancel_')) {
+      const pendingId = data.replace('cancel_', '');
+      pendingOrders.delete(pendingId);
+      bot.answerCallbackQuery(queryMsg.id, { text: 'បានបោះបង់ការកត់ត្រា' });
+      return bot.editMessageText('❌ បានបោះបង់ការកត់ត្រាកុម្ម៉ង់នេះ។', {
+        chat_id: chatId,
+        message_id: messageId,
       });
     }
 
-    const selectedSeller = cachedSellers[sellerIdx];
-    const sName = typeof selectedSeller === 'string' ? selectedSeller : selectedSeller?.name || 'ទូទៅ';
+    // Pick seller from inline buttons
+    if (data.startsWith('pick_')) {
+      const parts = data.split('_');
+      const pendingId = parts[1];
+      const sellerIdx = parseInt(parts[2], 10);
 
-    pendingOrders.delete(pendingId);
-    bot.answerCallbackQuery(queryMsg.id, { text: `✅ បានជ្រើសរើស: ${sName}` });
+      const pending = pendingOrders.get(pendingId);
+      if (!pending) {
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: 'ទិន្នន័យនេះបានកត់ត្រារួចហើយ ឬផុតកំណត់!',
+          show_alert: true,
+        });
+      }
 
-    try {
-      const orderNumber = await getNextOrderNumber();
-      const completeOrder = buildCompleteOrder({
-        parsed: pending.parsed,
-        orderNumber,
-        sellerRole: 'seller',
-        paymentStatus: pending.parsed.paymentStatus || 'unpaid',
-        teamLeader: pending.parsed.teamLeader || 'ឡា ធីតា',
+      const selectedMember = pending.sellers[sellerIdx];
+      if (!selectedMember) {
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: 'រកមិនឃើញឈ្មោះអ្នកលក់នេះទេ!',
+          show_alert: true,
+        });
+      }
+
+      pendingOrders.delete(pendingId);
+
+      bot.answerCallbackQuery(queryMsg.id, {
+        text: `✅ បានជ្រើសរើស: ${selectedMember.name}`,
       });
-      completeOrder.sellerName = sName;
 
-      await saveOrderToFirestore(completeOrder);
+      try {
+        const orderNumber = await getNextOrderNumber();
+        const paymentStatus = pending.parsed.paymentStatus || 'unpaid';
+        const completeOrder = buildCompleteOrder({
+          parsed: pending.parsed,
+          orderNumber,
+          sellerRole: selectedMember.role === 'មេក្រុម' ? 'seller' : 'seller',
+          paymentStatus,
+          teamLeader: selectedMember.groupName || 'Team ស៊ីង អ៊ី',
+        });
 
-      const payBadge = completeOrder.paymentStatus === 'paid'
-        ? `🟢 បានទូទាត់ ($${completeOrder.price})`
-        : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
+        completeOrder.sellerName = selectedMember.name;
+        completeOrder.teamLeader = selectedMember.groupName || 'Team ស៊ីង អ៊ី';
 
-      const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
-        ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
-        : completeOrder.companyDeliveryType === 'jt'
-        ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
-        : completeOrder.companyDeliveryType === 'cod'
-        ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
-        : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
+        let syncResultFooter = '';
 
-      const pkgTitle = completeOrder.packageId === 'combo_1_1'
-        ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-        : `ឈុត ${completeOrder.tubes} ទីប`;
+        if (!pending.alreadyInDb1 && !pending.alreadyInDb2) {
+          // Normal Dual Save: save to both Database 1 and Database 2
+          await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+          await syncToTeamUnitsDb({
+            completeOrder,
+            resolvedMember: selectedMember,
+            tubes: completeOrder.tubes,
+            cans: completeOrder.cans,
+          });
+          syncResultFooter = `📲 ទិន្នន័យបានចូល Database 1 (App Boost) និង Database 2 (App Team Units) រួចរាល់!`;
+        } else if (!pending.alreadyInDb1 && pending.alreadyInDb2) {
+          // App 1 missing, App 2 already exists -> Fill in App 1 only!
+          await setDoc(doc(dbOrders, ordersCol, completeOrder.id), sanitizeForFirestore(completeOrder));
+          syncResultFooter = `📲 បានកត់ត្រាបំពេញបន្ថែមចូល App 1 (Database 1) រួចរាល់!\n💡 (ចំណាំ: ក្នុង App 2 មានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើយ)`;
+        } else if (pending.alreadyInDb1 && !pending.alreadyInDb2) {
+          // App 2 missing, App 1 already exists -> Fill in App 2 only!
+          await syncToTeamUnitsDb({
+            completeOrder,
+            resolvedMember: selectedMember,
+            tubes: completeOrder.tubes,
+            cans: completeOrder.cans,
+          });
+          syncResultFooter = `📲 បានកត់ត្រាបំពេញបន្ថែមចូល App 2 (Database 2) រួចរាល់!\n💡 (ចំណាំ: ក្នុង App 1 មានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើយ)`;
+        }
 
-      const unitsDetail = completeOrder.cans > 0
-        ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-        : `${completeOrder.tubes} ទីប`;
+        const payBadge = paymentStatus === 'paid'
+          ? `🟢 បានទូទាត់ ($${completeOrder.price})`
+          : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
 
-      const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber})
+        const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
+          ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+          : completeOrder.companyDeliveryType === 'jt'
+          ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
+          : completeOrder.companyDeliveryType === 'cod'
+          ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
+          : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
+
+        const pkgTitle = completeOrder.packageId === 'combo_1_1'
+          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
+          : `ឈុត ${completeOrder.tubes} ទីប`;
+
+        const unitsDetail = completeOrder.cans > 0
+          ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
+          : `${completeOrder.tubes} ទីប`;
+
+        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [${shopName}]
 -----------------------------------------
 📞 ភ្ញៀវ: ${completeOrder.customerPhone}
 📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${pending.parsed.provinceKm}
 🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
-🏢 ក្រុម: ${completeOrder.teamLeader}
+👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${selectedMember.role}]
+🏢 ក្រុម: ${selectedMember.groupName || 'Team ស៊ីង អ៊ី'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
 💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
+${syncResultFooter}
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
-      await bot.editMessageText(successMsg, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, completeOrder.paymentStatus, true),
-        },
-      }).catch(err => {
-        if (!err.message?.includes('message is not modified')) console.error('editMessageText error:', err.message);
-      });
-    } catch (err) {
-      await bot.editMessageText(`❌ មានបញ្ហាក្នុងការរក្សាទុក៖ ${err.message}`, {
-        chat_id: chatId,
-        message_id: messageId,
-      }).catch(() => {});
-    }
-  }
+        bot.editMessageText(successMsg, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, paymentStatus),
+          },
+        });
 
-  // Commission member selection for Team Leader
-  if (data.startsWith('comm:')) {
-    const parts = data.split(':');
-    const orderId = parts[1];
-    const targetIdx = parts[2];
-
-    try {
-      const orderRef = doc(db, 'orders', orderId);
-      const orderSnap = await getDoc(orderRef);
-      if (!orderSnap.exists()) {
-        return bot.answerCallbackQuery(queryMsg.id, { text: 'រកមិនឃើញការកុម្ម៉ង់នេះទេ!', show_alert: true });
+        console.log(`[Dual DB Saved] #${orderNumber} for seller: ${completeOrder.sellerName} (${selectedMember.groupName})`);
+      } catch (err) {
+        console.error(`[${shopName}] Error saving order from callback:`, err);
+        bot.editMessageText(`❌ មានបញ្ហាក្នុងការរក្សាទុក៖ ${err.message}`, {
+          chat_id: chatId,
+          message_id: messageId,
+        });
       }
-
-      const orderData = orderSnap.data();
-      let selectedMember = '';
-      let commAmount = 0;
-      let isCommission = false;
-
-      const normLeader = normalizeKhmerStr(orderData.sellerName);
-      const leaderInfo = leaderTeamMap[normLeader] || leaderTeamMap[normalizeKhmerStr(orderData.teamLeader)] || leaderTeamMap[normalizeKhmerStr(orderData.teamGroup)];
-      const withLeaderList = leaderInfo?.withLeaderMembers || [];
-
-      if (targetIdx === 'self') {
-        selectedMember = orderData.sellerName;
-        commAmount = 0;
-        isCommission = false;
-        await bot.answerCallbackQuery(queryMsg.id, { text: '✅ មេក្រុមលក់ផ្ទាល់ខ្លួន' });
-      } else {
-        const idx = parseInt(targetIdx, 10);
-        selectedMember = withLeaderList[idx] || 'កូនក្រុម';
-        commAmount = calculateOrderCommission(orderData);
-        isCommission = true;
-        await bot.answerCallbackQuery(queryMsg.id, { text: `✅ ${selectedMember} (កម្រៃ +$${commAmount})` });
-      }
-
-      const updatedOrder = {
-        ...orderData,
-        actualSeller: selectedMember,
-        commissionSeller: isCommission ? selectedMember : null,
-        sellerCommission: commAmount,
-        isCommissionSale: isCommission,
-        updatedAt: new Date().toISOString(),
-      };
-
-      await saveOrderToFirestore(updatedOrder);
-
-      const payBadge = updatedOrder.paymentStatus === 'paid'
-        ? `🟢 បានទូទាត់ ($${updatedOrder.price})`
-        : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price})`;
-
-      const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
-        ? `ម៉ូតូ ($${updatedOrder.deliveryFee})`
-        : updatedOrder.companyDeliveryType === 'jt'
-        ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee})`
-        : updatedOrder.companyDeliveryType === 'cod'
-        ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee})`
-        : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee})`;
-
-      const pkgTitle = updatedOrder.packageId === 'combo_1_1'
-        ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-        : `ឈុត ${updatedOrder.tubes} ទីប`;
-
-      const unitsDetail = updatedOrder.cans > 0
-        ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
-        : `${updatedOrder.tubes} ទីប`;
-
-      const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
-      const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
-
-      const sellerLine = isCommission
-        ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${selectedMember} (ទទួលបានកម្រៃ +$${commAmount})`
-        : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (លក់ផ្ទាល់ខ្លួន)`;
-
-      const resultMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber})
------------------------------------------
-📞 ភ្ញៀវ: ${updatedOrder.customerPhone}${advisorLine}${productTypeLine}
-📍 ទីតាំង: ${updatedOrder.destination}, ខេត្ត${updatedOrder.provinceKm || ''}
-🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price})
-🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
-🏢 ក្រុម: ${updatedOrder.teamLeader || updatedOrder.teamGroup || 'ក្រុម'}
-🧪 ចំនួនលក់: ${unitsDetail}
-💳 ស្ថានភាពទូទាត់: ${payBadge}
-📅 កាលបរិច្ឆេទ: ${updatedOrder.date}
------------------------------------------
-👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
-
-      await bot.editMessageText(resultMsg, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: getPaymentInlineKeyboard(updatedOrder.id, updatedOrder.paymentStatus, true),
-        },
-      });
-    } catch (e) {
-      console.error('Error handling commission callback:', e);
     }
-    return;
-  }
 
-  // 3. Toggle Payment Status (Paid / Unpaid)
-  if (data.startsWith('tgpay:')) {
-    const parts = data.split(':');
-    const orderId = parts[1];
-    const newStatus = parts[2]; // 'paid' or 'unpaid'
+    // App 2 Order Action: Confirm / Cancel (For all teams outside Sing Eu)
+    if (data.startsWith('app2_action:')) {
+      const parts = data.split(':');
+      const orderId = parts[1];
+      const action = parts[2]; // 'confirm' | 'cancel' | 'noop'
 
-    try {
-      const orderRef = doc(db, 'orders', orderId);
-      const orderSnap = await getDoc(orderRef);
-      if (!orderSnap.exists()) {
+      if (action === 'noop') {
         return bot.answerCallbackQuery(queryMsg.id, {
-          text: 'រកមិនឃើញទិន្នន័យកុម្ម៉ង់នេះទេ!',
-          show_alert: true,
+          text: 'ការកុម្ម៉ង់នេះត្រូវបានរៀបចំរួចរាល់ហើយ!',
         });
       }
 
-      await setDoc(orderRef, { paymentStatus: newStatus }, { merge: true });
-      const updatedOrder = orderSnap.data();
-      updatedOrder.paymentStatus = newStatus;
+      if (action === 'confirm') {
+        bot.answerCallbackQuery(queryMsg.id, {
+          text: '✅ បានយល់ព្រមទទួលស្គាល់ការកុម្ម៉ង់នេះ!',
+        });
 
-      // Also update in personal folder seller_orders/{seller}/orders/{orderId}
-      const seller = updatedOrder.sellerName || 'ទូទៅ';
-      await setDoc(doc(db, 'seller_orders', seller, 'orders', orderId), { paymentStatus: newStatus }, { merge: true });
+        return bot.editMessageReplyMarkup(
+          {
+            inline_keyboard: getApp2ConfirmInlineKeyboard(orderId, 'confirmed'),
+          },
+          {
+            chat_id: chatId,
+            message_id: messageId,
+          }
+        );
+      }
 
-      bot.answerCallbackQuery(queryMsg.id, {
-        text: newStatus === 'paid' ? '✅ ប្ដូរទៅ: បានទូទាត់' : '✅ ប្ដូរទៅ: មិនទាន់ទូទាត់',
-      });
+      if (action === 'cancel') {
+        try {
+          // Delete record from Database 2 (team_units_records)
+          const qRecord = query(collection(dbTeamUnits, 'team_units_records'), where('orderId', '==', orderId));
+          const recSnap = await getDocs(qRecord);
+          for (const d of recSnap.docs) {
+            await deleteDoc(d.ref);
+          }
 
-      const payBadge = newStatus === 'paid'
-        ? `🟢 បានទូទាត់ ($${updatedOrder.price || 0})`
-        : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price || 0})`;
+          bot.answerCallbackQuery(queryMsg.id, {
+            text: '❌ បានបោះបង់ និងលុបចេញពី App ទី ២ រួចរាល់!',
+          });
 
-      const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
-        ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
-        : updatedOrder.companyDeliveryType === 'jt'
-        ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2.5})`
-        : updatedOrder.companyDeliveryType === 'cod'
-        ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
-        : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+          const origText = queryMsg.message.text || '';
+          const cancelledText = `❌ [បានបោះបង់] ការកុម្ម៉ង់នេះត្រូវបានបោះបង់ និងលុបចេញពី App ទី ២ រួចរាល់!\n\n${origText.replace('✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ!', '🚫 ការកុម្ម៉ង់ត្រូវបានបោះបង់')}`;
 
-      const pkgTitle = updatedOrder.packageId === 'combo_1_1'
-        ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-        : `ឈុត ${updatedOrder.tubes || 3} ទីប`;
+          return bot.editMessageText(cancelledText, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: getApp2ConfirmInlineKeyboard(orderId, 'cancelled'),
+            },
+          });
+        } catch (err) {
+          console.error(`[App 2 Action] Error cancelling order ${orderId}:`, err);
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: `កំហុសបោះបង់៖ ${err.message}`,
+            show_alert: true,
+          });
+        }
+      }
+    }
 
-      const unitsDetail = (updatedOrder.cans || 0) > 0
-        ? `${updatedOrder.tubes || 0} ទីប + ${updatedOrder.cans} កំប៉ុង`
-        : `${updatedOrder.tubes || 0} ទីប`;
+    // Toggle payment status
+    if (data.startsWith('tgpay:')) {
+      const parts = data.split(':');
+      const orderId = parts[1];
+      const newStatus = parts[2] === 'paid' ? 'paid' : 'unpaid';
 
-      const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
-      const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
+      try {
+        let updatedOrder = null;
 
-      const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
+        // 1. Try to update Database 1 (if exists)
+        const orderRef = doc(dbOrders, ordersCol, orderId);
+        const orderSnap = await getDoc(orderRef);
+        if (orderSnap.exists()) {
+          await setDoc(orderRef, { paymentStatus: newStatus }, { merge: true });
+          updatedOrder = orderSnap.data();
+          updatedOrder.paymentStatus = newStatus;
+        }
+
+        // 2. Update Database 2 (team_units_records)
+        const qRecord = query(collection(dbTeamUnits, 'team_units_records'), where('orderId', '==', orderId));
+        const recSnap = await getDocs(qRecord);
+        for (const d of recSnap.docs) {
+          await setDoc(d.ref, { paymentStatus: newStatus }, { merge: true });
+          if (!updatedOrder) {
+            updatedOrder = d.data();
+            updatedOrder.paymentStatus = newStatus;
+          }
+        }
+
+        bot.answerCallbackQuery(queryMsg.id, {
+          text: newStatus === 'paid' ? '✅ ប្ដូរទៅ: បានទូទាត់' : '✅ ប្ដូរទៅ: មិនទាន់ទូទាត់',
+        });
+
+        const payBadge = newStatus === 'paid'
+          ? `🟢 បានទូទាត់ ($${updatedOrder ? updatedOrder.price : 0})`
+          : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder ? updatedOrder.price : 0})`;
+
+        const deliveryTypeBadge = updatedOrder?.deliveryMethod === 'moto'
+          ? `ម៉ូតូ ($${updatedOrder?.deliveryFee || 2})`
+          : updatedOrder?.companyDeliveryType === 'jt'
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder?.deliveryFee || 2.5})`
+          : updatedOrder?.companyDeliveryType === 'cod'
+          ? `ក្រុមហ៊ុន COD ($${updatedOrder?.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder?.deliveryFee || 2})`;
+
+        const pkgTitle = updatedOrder?.packageId === 'combo_1_1'
+          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
+          : `ឈុត ${updatedOrder?.tubes || 3} ទីប`;
+
+        const unitsDetail = (updatedOrder?.cans || 0) > 0
+          ? `${updatedOrder?.tubes || 0} ទីប + ${updatedOrder?.cans} កំប៉ុង`
+          : `${updatedOrder?.tubes || 0} ទីប`;
+
+        const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! [${shopName}]
 -----------------------------------------
-📞 ភ្ញៀវ: ${updatedOrder.customerPhone || 'N/A'}${advisorLine}${productTypeLine}
-📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}
-🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
+📞 ភ្ញៀវ: ${updatedOrder?.customerPhone || 'N/A'}
+📍 ទីតាំង: ${updatedOrder?.destination || 'N/A'}
+🛍️ ឈុត: ${pkgTitle} ($${updatedOrder?.price || 0})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}
-🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
+👨‍💼 អ្នកលក់: ${updatedOrder?.sellerName || 'N/A'}
+🏢 ក្រុម: ${updatedOrder?.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
-📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
+📅 កាលបរិច្ឆេទ: ${updatedOrder?.date || ''}
 -----------------------------------------
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
-      await bot.editMessageText(updatedSuccessMsg, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: {
-          inline_keyboard: getPaymentInlineKeyboard(orderId, newStatus),
-        },
-      }).catch(err => {
-        if (!err.message?.includes('message is not modified')) console.error('editMessageText error:', err.message);
-      });
-    } catch (e) {
-      bot.answerCallbackQuery(queryMsg.id, {
-        text: `កំហុស: ${e.message}`,
-        show_alert: true,
-      }).catch(() => {});
+        bot.editMessageText(updatedSuccessMsg, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: getPaymentInlineKeyboard(orderId, newStatus),
+          },
+        });
+      } catch (e) {
+        console.error(`[${shopName}] Error toggling payment status:`, e);
+        bot.answerCallbackQuery(queryMsg.id, {
+          text: `កំហុស: ${e.message}`,
+          show_alert: true,
+        });
+      }
     }
-  }
+  });
+
+  return bot;
+}
+
+// ----------------------------------------------------
+// Start Shop 1 Bot (@puseth_sales_bot)
+// ----------------------------------------------------
+const tokenShop1 = process.env.TELEGRAM_BOT_TOKEN || '8978704090:AAGIPW0Dv8p2jzNE4Pld-Eyaeo4OOKJDZ_w';
+startBotInstance({
+  shopName: 'Shop 1 (@puseth_sales_bot)',
+  token: tokenShop1,
+  ordersCol: 'orders',
+  metadataCol: 'metadata',
+  appTitle: 'Boost & Team Units Tracker',
 });
+
+// ----------------------------------------------------
+// Start Shop 2 Bot (@puseth_shop2_bot) -> 100% SEPARATE FILE & ISOLATED DATABASE!
+// ----------------------------------------------------
+require('./bot-shop2');
 
 // ----------------------------------------------------
 // Start Team WeCan Bot (@team_wecan_bot) if available
@@ -953,5 +1529,5 @@ try {
   startWeCanBot();
   console.log('🚀 [Team WeCan Bot] Initialized on Cloud!');
 } catch (err) {
-  // Gracefully ignored if not present or token not set
+  // Gracefully ignored
 }

@@ -47,7 +47,7 @@ function normalizeSellerName(name) {
   if (!name) return 'ទូទៅ';
   const clean = name.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').trim();
   if (clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង')) {
-    return 'ស៊ីង អ៊ី';
+    return 'សុីង អុឺ';
   }
   if (clean.includes('ណាក់') || clean.includes('ចំរើន')) {
     return 'ណាក់ ចំរើន';
@@ -59,43 +59,23 @@ function normalizeSellerName(name) {
 function detectTeamLeader(rawText = '', sellerName = '') {
   if (rawText) {
     const lines = rawText.split('\n');
-    // 1. Direct match for ថ្នាក់ដឹកនាំ: or មេក្រុម:
     for (const line of lines) {
-      const match = line.match(/(?:ថ្នាក់ដឹកនាំ|មេក្រុម|team\s*leader)\s*[:=]\s*(.+)/i);
-      if (match && match[1]) {
-        const extracted = match[1]
-          .replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\u200B\u200C\u200D]+/gu, '')
-          .trim();
-        if (extracted) {
-          if (/ឡា\s*ធីតា/i.test(extracted)) return 'ឡា ធីតា';
-          if (/ឡា\s*បុប្ផា/i.test(extracted)) return 'ឡា បុប្ផា';
-          if (/ផល\s*សុម៉ាលីតា/i.test(extracted)) return 'ផល សុម៉ាលីតា';
-          if (/ឆេង\s*សម្ភស្ស/i.test(extracted)) return 'ឆេង សម្ភស្ស';
-          if (/ឆេង\s*រ៉ាឈីត/i.test(extracted)) return 'ឆេង រ៉ាឈីត';
-          if (/ឆេង\s*ចិន្តា/i.test(extracted)) return 'ឆេង ចិន្តា';
-          if (/វណ្ណ\s*ធីតា/i.test(extracted)) return 'វណ្ណ ធីតា';
-          if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(extracted)) return 'ស៊ីង អ៊ី';
-          return extracted;
+      if (/អ្នកលក់|មេក្រុម|team/i.test(line)) {
+        if (/ណាក់|ចំរើន/i.test(line)) {
+          return 'ណាក់ ចំរើន';
+        }
+        if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(line)) {
+          return 'សុីង អុឺ';
         }
       }
     }
-
-    // 2. Named leader checks
-    for (const line of lines) {
-      if (/ថ្នាក់ដឹកនាំ|មេក្រុម|team/i.test(line)) {
-        if (/ឡា\s*ធីតា/i.test(line)) return 'ឡា ធីតា';
-        if (/ឡា\s*បុប្ផា/i.test(line)) return 'ឡា បុប្ផា';
-        if (/ផល\s*សុម៉ាលីតា/i.test(line)) return 'ផល សុម៉ាលីតា';
-        if (/ឆេង\s*សម្ភស្ស/i.test(line)) return 'ឆេង សម្ភស្ស';
-        if (/ឆេង\s*រ៉ាឈីត/i.test(line)) return 'ឆេង រ៉ាឈីត';
-        if (/ឆេង\s*ចិន្តា/i.test(line)) return 'ឆេង ចិន្តា';
-        if (/វណ្ណ\s*ធីតា/i.test(line)) return 'វណ្ណ ធីតា';
-        if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(line)) return 'សុីង អុឺ';
-      }
+    if (/ណាក់\s*ចំរើន|ណាក់ចំរើន/i.test(rawText)) {
+      return 'ណាក់ ចំរើន';
     }
   }
-
-  return 'ទូទៅ';
+  const s = normalizeSellerName(sellerName);
+  if (s === 'ណាក់ ចំរើន') return 'ណាក់ ចំរើន';
+  return 'សុីង អុឺ'; // Default team
 }
 
 function getKhmerToday() {
@@ -165,9 +145,7 @@ function parseOrderText(text) {
   if (rawLines.length === 0) return null;
 
   let locationText = '';
-  let productType = '';
   let customerPhone = '';
-  let advisorPhone = '';
   let packageRaw = '';
   let priceRaw = '';
   let deliveryRaw = '';
@@ -181,17 +159,6 @@ function parseOrderText(text) {
     // Location: ទីតាំង : ...
     if (/ទីតាំង/i.test(line)) {
       locationText = cleaned.replace(/^ទីតាំង\s*[:៖]?\s*/i, '').trim();
-    }
-    // Product Type: ប្រភេទ : ...
-    else if (/ប្រភេទ/i.test(line)) {
-      productType = cleaned.replace(/^ប្រភេទ\s*[:៖]?\s*/i, '').trim();
-    }
-    // Advisor phone: អ្នកប្រឹក្សា: ...
-    else if (/អ្នកប្រឹក្សា/i.test(line)) {
-      const match = line.match(/(0\d{8,9})/);
-      if (match) {
-        advisorPhone = match[1];
-      }
     }
     // Customer phone: អ្នកទទួល: ...
     else if (/អ្នកទទួល/i.test(line)) {
@@ -221,22 +188,9 @@ function parseOrderText(text) {
     else if (/អ្នកលក់/i.test(line)) {
       sellerRaw = cleaned.replace(/^[\s\S]*?អ្នកលក់\s*[:៖]?\s*/i, '').trim();
     }
-    // Date: Date: or Dat: or កាលបរិច្ឆេទ or ថ្ងៃទី or ថ្ងៃ:
-    else if (/(?:Date|Dat|កាលបរិច្ឆេទ|ថ្ងៃទី|ថ្ងៃ)\s*[:៖]?/i.test(line)) {
-      dateRaw = cleaned.replace(/^[\s\S]*?(?:Date|Dat|កាលបរិច្ឆេទ|ថ្ងៃទី|ថ្ងៃ)\s*[:៖]?\s*/i, '').trim();
-    }
-  }
-
-  // Fallback for Date if not explicitly matched by label
-  if (!dateRaw) {
-    for (const line of rawLines) {
-      if (/(?:Dat|Date|ថ្ងៃ)/i.test(line) || /\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(line)) {
-        const dMatch = line.match(/(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/);
-        if (dMatch) {
-          dateRaw = dMatch[1];
-          break;
-        }
-      }
+    // Date: Date: or កាលបរិច្ឆេទ
+    else if (/Date|កាលបរិច្ឆេទ/i.test(line)) {
+      dateRaw = cleaned.replace(/^(Date|កាលបរិច្ឆេទ)\s*[:៖]?\s*/i, '').trim();
     }
   }
 
@@ -256,8 +210,18 @@ function parseOrderText(text) {
   // Determine Team Leader from the message
   const teamLeader = detectTeamLeader(text, sellerRaw);
 
+  // If the line 'អ្នកលក់ :' specified the Team Leader ('សុីង អុឺ' or 'ណាក់ ចំរើន'),
+  // then the actual individual seller needs to be selected via keyboard
+  // unless explicitly written.
   let cleanSeller = normalizeSellerName(sellerRaw);
-  const sellerName = cleanSeller;
+  let finalSellerName = cleanSeller;
+
+  if (cleanSeller === 'សុីង អុឺ' || cleanSeller === 'ណាក់ ចំរើន') {
+    // Team Leader detected, no specific seller name specified in this line
+    finalSellerName = '';
+  }
+
+  const sellerName = finalSellerName;
 
   // Match Province
   let provinceId = 'phnom_penh';
@@ -327,19 +291,16 @@ function parseOrderText(text) {
   // Supports: "20ម៉ឺន", "12ម៉ឺន", "30ម៉ឺន", "50$", "200000រៀល"
   let parsedPrice = null;
   if (priceRaw) {
-    const normPrice = normalizeKhmerDigits(priceRaw)
-      .replace(/[\uFE0E\uFE0F\s]+/g, '')
-      .replace(/មុឺន|មឺន|មុឺង|ម៉ឺង|ម៉ឺន/g, 'ម៉ឺន');
+    const normPrice = normalizeKhmerDigits(priceRaw);
 
-    // 1. Check for "ម៉ឺន" / "មុឺន" (e.g. 20ម៉ឺន = $50, 12មុឺន = $30, 6.8ម៉ឺន = $17, 120000ម៉ឺន = $30)
-    const meunMatch = normPrice.match(/([\d\.]+)\s*ម៉ឺន/i);
+    // 1. Check for "ម៉ឺន" (e.g. 20ម៉ឺន = $50, 12ម៉ឺន = $30)
+    const meunMatch = normPrice.match(/(\d+)\s*ម៉ឺន/i);
     if (meunMatch) {
-      const meunVal = parseFloat(meunMatch[1]);
-      if (meunVal >= 1000) {
-        parsedPrice = Math.round(meunVal / 4000);
-      } else {
-        parsedPrice = Math.round(meunVal * 2.5);
-      }
+      const meunVal = parseInt(meunMatch[1], 10);
+      // In Cambodia: 1 ម៉ឺន = 10,000 Riels = $2.50
+      // 20 ម៉ឺន = 200,000 Riels = $50
+      // 12 ម៉ឺន = 120,000 Riels = $30
+      parsedPrice = meunVal * 2.5;
     }
 
     // 2. Check for dollar sign (e.g. 50$, $50)
@@ -412,8 +373,6 @@ function parseOrderText(text) {
 
   return {
     customerPhone: customerPhone ? customerPhone.trim() : 'N/A',
-    advisorPhone: advisorPhone ? advisorPhone.trim() : '',
-    productType: productType ? productType.trim() : '',
     provinceId,
     provinceKm: matchedProv ? matchedProv.km : 'ភ្នំពេញ',
     destination: destination ? destination.trim() : 'N/A',
@@ -440,17 +399,18 @@ function buildCompleteOrder({
   paymentStatus = null,
   teamLeader = null,
 }) {
-  const { pkg, deliveryMethod, companyDeliveryType, deliveryFee, sellerName, provinceId, destination, customerPhone, advisorPhone, productType, date, rawText } = parsed;
+  const { pkg, deliveryMethod, companyDeliveryType, deliveryFee, sellerName, provinceId, destination, customerPhone, date, rawText } = parsed;
 
-  // Team members sell for themselves (no commission deduction)
-  const sellerCommission = 0;
+  const isCod = deliveryMethod === 'company' && companyDeliveryType === 'cod';
+  const table = isCod ? SELLER_COMMISSION_RATES.cod : SELLER_COMMISSION_RATES.standard;
+  const sellerCommission = sellerRole === 'staff' ? 0 : (table[pkg.id] || 3);
 
   const tubes = pkg.tubes || 1;
   const cans = pkg.cans || 0;
 
   // Cream cost = $3.50/tube, ឫសដូង can cost = $18.00/can
   const productCost = (tubes * 3.5) + (cans * 18.0);
-  const orderProfit = pkg.price - deliveryFee - productCost;
+  const orderProfit = pkg.price - deliveryFee - productCost - sellerCommission;
 
   const timestamp = Date.now();
   const id = `ord_${timestamp}_${Math.random().toString(36).substring(2, 6)}`;
@@ -464,8 +424,6 @@ function buildCompleteOrder({
     id,
     orderNumber,
     customerPhone: cleanPhone,
-    advisorPhone: advisorPhone || '',
-    productType: productType || '',
     sellerName: cleanSeller,
     teamLeader: finalTeamLeader,
     sellerRole,
