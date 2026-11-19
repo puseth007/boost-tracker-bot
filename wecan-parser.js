@@ -34,10 +34,10 @@ const PACKAGES = [
   { id: 'set_3', tubes: 3, cans: 0, nameKm: 'ឈុត ២ + ១ ទីប', price: 30 },
   { id: 'set_6', tubes: 6, cans: 0, nameKm: 'ឈុត ៣ + ៣ ទីប', price: 50 },
   { id: 'set_10', tubes: 10, cans: 0, nameKm: 'ឈុត ៥ + ៥ ទីប', price: 70 },
-  { id: 'combo_1_1', tubes: 1, cans: 1, nameKm: 'ឈុត ១ កំប៉ុង + ១ គ្រីម', price: 50 },
-  { id: 'combo_2_2', tubes: 2, cans: 2, nameKm: 'ឈុត ២ កំប៉ុង + ២ គ្រីម', price: 90 },
-  { id: 'combo_3_3', tubes: 3, cans: 3, nameKm: 'ឈុត ៣ កំប៉ុង + ៣ គ្រីម', price: 135 },
-  { id: 'combo_5_5', tubes: 5, cans: 5, nameKm: 'ឈុត ៥ កំប៉ុង + ៥ គ្រីម', price: 180 },
+  { id: 'combo_1_1', tubes: 1, cans: 1, nameKm: 'ឈុត ១ កំប៉ុង + ១ ទីប', price: 50 },
+  { id: 'combo_2_2', tubes: 2, cans: 2, nameKm: 'ឈុត ២ កំប៉ុង + ២ ទីប', price: 90 },
+  { id: 'combo_3_3', tubes: 3, cans: 3, nameKm: 'ឈុត ៣ កំប៉ុង + ៣ ទីប', price: 135 },
+  { id: 'combo_5_5', tubes: 5, cans: 5, nameKm: 'ឈុត ៥ កំប៉ុង + ៥ ទីប', price: 180 },
 ];
 
 const SELLER_COMMISSION_RATES = {
