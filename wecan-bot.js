@@ -70,6 +70,7 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
 // ONLY members who sell FOR the team leader (កៅ យ៉ារីន)
 const SOTHANY_COMMISSION_MEMBERS = [
   'កៅ យ៉ារីន',
+  'សាន់ សូលីដា',
 ];
 
 function isLeaderWithCommission(sellerName) {
