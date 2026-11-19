@@ -280,15 +280,23 @@ function updateTeamsState(groups) {
     }
 
     if (lName) {
+      const allMembers = Array.isArray(grp.members)
+        ? grp.members.map((m) => (typeof m === 'string' ? m.trim() : (m?.name || '').trim())).filter(Boolean)
+        : [];
+      const effectiveWithLeader = withLeaderMembers.length > 0 ? withLeaderMembers : allMembers;
+
       const leaderObj = {
         group: grp,
         leaderName: lName,
         commissionLeader: commLeader,
-        withLeaderMembers: withLeaderMembers,
+        withLeaderMembers: effectiveWithLeader,
       };
       leaderTeamMap[normalizeKhmerStr(lName)] = leaderObj;
       if (commLeader && commLeader !== lName) {
         leaderTeamMap[normalizeKhmerStr(commLeader)] = leaderObj;
+      }
+      if (gName) {
+        leaderTeamMap[normalizeKhmerStr(gName)] = leaderObj;
       }
     }
   });
@@ -774,7 +782,7 @@ bot.on('callback_query', async (queryMsg) => {
       let isCommission = false;
 
       const normLeader = normalizeKhmerStr(orderData.sellerName);
-      const leaderInfo = leaderTeamMap[normLeader];
+      const leaderInfo = leaderTeamMap[normLeader] || leaderTeamMap[normalizeKhmerStr(orderData.teamLeader)] || leaderTeamMap[normalizeKhmerStr(orderData.teamGroup)];
       const withLeaderList = leaderInfo?.withLeaderMembers || [];
 
       if (targetIdx === 'self') {
