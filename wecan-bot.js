@@ -67,19 +67,9 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
 }
 
 // Commission sellers under Team Leader Prak Sothany
+// ONLY members who sell FOR the team leader (កៅ យ៉ារីន)
 const SOTHANY_COMMISSION_MEMBERS = [
-  'វ៉ា កក្កដា',
-  'សាន់ សូលីដា',
-  'ប្រាក់ សុផាន់ណា',
   'កៅ យ៉ារីន',
-  'តេង សុវណ្ណារ័ត្ន',
-  'ផល្លី ស្រីណែត',
-  'រ៉េន ស្រីណេត',
-  'សយ ស្រីណេត',
-  'សឿន សារ៉ុម',
-  'សឿន ចាន់',
-  'ព្រុំ វុទ្ធី',
-  'ឃីន ម៉ាលី',
 ];
 
 function isLeaderWithCommission(sellerName) {
@@ -408,6 +398,10 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           completeOrder.commissionSeller = null;
           completeOrder.sellerCommission = 0;
           completeOrder.isCommissionSale = false;
+          if (isLeaderOrder) {
+            completeOrder.teamLeader = 'ប្រាក់ សុថានី';
+            completeOrder.teamGroup = 'ក្រុម ប្រាក់ សុថានី';
+          }
 
           await saveOrderToFirestore(completeOrder);
 
