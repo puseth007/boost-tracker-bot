@@ -35,11 +35,32 @@ const PACKAGES = [
   { id: 'set_6', tubes: 6, cans: 0, nameKm: 'ឈុត ៣ + ៣ ទីប', price: 50 },
   { id: 'set_10', tubes: 10, cans: 0, nameKm: 'ឈុត ៥ + ៥ ទីប', price: 70 },
   { id: 'combo_1_1', tubes: 1, cans: 1, nameKm: 'ឈុត ១ កំប៉ុង + ១ គ្រីម', price: 50 },
+  { id: 'combo_2_2', tubes: 2, cans: 2, nameKm: 'ឈុត ២ ថ្នាំ + ២ គ្រីម', price: 90 },
+  { id: 'combo_3_3', tubes: 3, cans: 3, nameKm: 'ឈុត ៣ ថ្នាំ + ៣ គ្រីម', price: 135 },
+  { id: 'combo_5_5', tubes: 5, cans: 5, nameKm: 'ឈុត ៥ ថ្នាំ + ៥ គ្រីម', price: 180 },
 ];
 
 const SELLER_COMMISSION_RATES = {
-  standard: { set_1: 1.0, set_3: 2.0, set_6: 3.0, set_10: 5.0, combo_1_1: 3.0 },
-  cod: { set_1: 0.7, set_3: 1.5, set_6: 2.5, set_10: 4.5, combo_1_1: 2.5 },
+  standard: {
+    set_1: 1.0,
+    set_3: 2.0,
+    set_6: 3.0,
+    set_10: 5.0,
+    combo_1_1: 3.0,
+    combo_2_2: 10.0,
+    combo_3_3: 15.0,
+    combo_5_5: 25.0,
+  },
+  cod: {
+    set_1: 0.7,
+    set_3: 1.5,
+    set_6: 2.5,
+    set_10: 4.5,
+    combo_1_1: 2.5,
+    combo_2_2: 9.5,
+    combo_3_3: 14.5,
+    combo_5_5: 24.5,
+  },
 };
 
 // Normalize Seller Names (Standardizing Team Leaders)
@@ -293,45 +314,13 @@ function parseOrderText(text) {
     destination = matchedProv ? matchedProv.km : 'ភ្នំពេញ';
   }
 
-  // Package & Product Detection:
-  // Check for ឫសដូង (or common variants: ឬសដូង, បួសដូង, កំប៉ុង, ដប)
-  const normPkg = normalizeKhmerDigits(packageRaw).toLowerCase();
-  const fullTextNorm = normalizeKhmerDigits(text).toLowerCase();
-
-  const isComboHemorrhoid =
-    (normPkg.includes('ឫសដូង') || normPkg.includes('ឬសដូង') || normPkg.includes('បួសដូង') || normPkg.includes('កំប៉ុង')) ||
-    (fullTextNorm.includes('ឫសដូង') || fullTextNorm.includes('ឬសដូង') || fullTextNorm.includes('បួសដូង'));
-
-  let selectedPkg = PACKAGES[1]; // Default to set_3
-
-  if (isComboHemorrhoid) {
-    // Combo: ឫសដូង ១កំប៉ុង + គ្រីម ១ទីប ($50)
-    selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || {
-      id: 'combo_1_1',
-      tubes: 1,
-      cans: 1,
-      nameKm: 'ឈុត ១ កំប៉ុង + ១ គ្រីម',
-      price: 50,
-    };
-  } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5')) {
-    selectedPkg = PACKAGES[3]; // set_10 ($70)
-  } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3')) {
-    selectedPkg = PACKAGES[2]; // set_6 ($50)
-  } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || normPkg.includes('3') || normPkg.includes('៣')) {
-    selectedPkg = PACKAGES[1]; // set_3 ($30)
-  } else if (normPkg.includes('1') || normPkg.includes('១')) {
-    selectedPkg = PACKAGES[0]; // set_1 ($17)
-  }
-
   // Dynamic Price Extraction from "តម្លៃ: ..."
-  // Supports: "20ម៉ឺន", "12ម៉ឺន", "30ម៉ឺន", "50$", "200000រៀល"
   let parsedPrice = null;
   if (priceRaw) {
     const normPrice = normalizeKhmerDigits(priceRaw)
       .replace(/[\uFE0E\uFE0F\s]+/g, '')
       .replace(/មុឺន|មឺន|មុឺង|ម៉ឺង|ម៉ឺន/g, 'ម៉ឺន');
 
-    // 1. Check for "ម៉ឺន" / "មុឺន" (e.g. 20ម៉ឺន = $50, 12មុឺន = $30, 6.8ម៉ឺន = $17, 120000ម៉ឺន = $30)
     const meunMatch = normPrice.match(/([\d\.]+)\s*ម៉ឺន/i);
     if (meunMatch) {
       const meunVal = parseFloat(meunMatch[1]);
@@ -342,7 +331,6 @@ function parseOrderText(text) {
       }
     }
 
-    // 2. Check for dollar sign (e.g. 50$, $50)
     if (!parsedPrice) {
       const dollarMatch = normPrice.match(/(\d+)\s*\$|\$\s*(\d+)/);
       if (dollarMatch) {
@@ -350,7 +338,6 @@ function parseOrderText(text) {
       }
     }
 
-    // 3. Check for raw Riels (e.g. 200000, 120000)
     if (!parsedPrice) {
       const rielMatch = normPrice.match(/(\d{4,6})/);
       if (rielMatch) {
@@ -360,6 +347,44 @@ function parseOrderText(text) {
         }
       }
     }
+  }
+
+  // Package & Product Detection:
+  const normPkg = normalizeKhmerDigits(packageRaw).toLowerCase();
+  const fullTextNorm = normalizeKhmerDigits(text).toLowerCase();
+
+  const hasMedicineCombo =
+    (normPkg.includes('ឫសដូង') || normPkg.includes('ឬសដូង') || normPkg.includes('បួសដូង') || normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')) ||
+    (fullTextNorm.includes('ឫសដូង') || fullTextNorm.includes('ឬសដូង') || fullTextNorm.includes('បួសដូង') || (fullTextNorm.includes('ថ្នាំ') && fullTextNorm.includes('គ្រីម')));
+
+  let selectedPkg = PACKAGES[1]; // Default to set_3
+
+  // Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
+  if (
+    (hasMedicineCombo && (normPkg.includes('5') || normPkg.includes('៥') || fullTextNorm.includes('5+5') || fullTextNorm.includes('5ថ្នាំ'))) ||
+    parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190)
+  ) {
+    selectedPkg = PACKAGES.find((p) => p.id === 'combo_5_5') || PACKAGES[7];
+  } else if (
+    (hasMedicineCombo && (normPkg.includes('3') || normPkg.includes('៣') || fullTextNorm.includes('3+3') || fullTextNorm.includes('3ថ្នាំ'))) ||
+    parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140)
+  ) {
+    selectedPkg = PACKAGES.find((p) => p.id === 'combo_3_3') || PACKAGES[6];
+  } else if (
+    (hasMedicineCombo && (normPkg.includes('2') || normPkg.includes('២') || fullTextNorm.includes('2+2') || fullTextNorm.includes('2ថ្នាំ'))) ||
+    parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95)
+  ) {
+    selectedPkg = PACKAGES.find((p) => p.id === 'combo_2_2') || PACKAGES[5];
+  } else if (hasMedicineCombo || (parsedPrice === 50 && (normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')))) {
+    selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || PACKAGES[4];
+  } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
+    selectedPkg = PACKAGES[3]; // set_10 ($70)
+  } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3') || parsedPrice === 50) {
+    selectedPkg = PACKAGES[2]; // set_6 ($50)
+  } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || normPkg.includes('3') || normPkg.includes('៣') || parsedPrice === 30) {
+    selectedPkg = PACKAGES[1]; // set_3 ($30)
+  } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
+    selectedPkg = PACKAGES[0]; // set_1 ($17)
   }
 
   // Apply parsed price if valid and positive

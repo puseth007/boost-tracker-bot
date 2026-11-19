@@ -79,40 +79,63 @@ function isLeaderWithCommission(sellerName) {
   return s.includes('សុថានី');
 }
 
+function formatPackageTitle(order) {
+  if (!order) return 'ឈុត';
+  if (order.packageId === 'combo_5_5' || (order.cans === 5 && order.tubes === 5) || order.price === 180) return 'ឈុត ៥ ថ្នាំ + ៥ គ្រីម';
+  if (order.packageId === 'combo_3_3' || (order.cans === 3 && order.tubes === 3) || order.price === 135) return 'ឈុត ៣ ថ្នាំ + ៣ គ្រីម';
+  if (order.packageId === 'combo_2_2' || (order.cans === 2 && order.tubes === 2) || order.price === 90) return 'ឈុត ២ ថ្នាំ + ២ គ្រីម';
+  if (order.packageId === 'combo_1_1' || (order.cans === 1 && order.tubes === 1) || (order.cans > 0 && order.tubes > 0)) return 'ឈុត ១ កំប៉ុង + ១ គ្រីម';
+  if (order.tubes === 10) return 'ឈុត ៥ + ៥ ទីប';
+  if (order.tubes === 6) return 'ឈុត ៣ + ៣ ទីប';
+  if (order.tubes === 3) return 'ឈុត ២ + ១ ទីប';
+  if (order.tubes === 1) return 'ឈុត ១ ទីប';
+  return `ឈុត ${order.tubes || 1} ទីប`;
+}
+
 function calculateOrderCommission(orderData) {
   const tubes = Number(orderData.tubes || 0);
   const cans = Number(orderData.cans || 0);
   const pkgId = orderData.packageId || '';
   const prodType = (orderData.productType || '').toLowerCase();
+  const price = Number(orderData.price || 0);
+
+  const isCod =
+    orderData.companyDeliveryType === 'cod' ||
+    (orderData.deliveryMethod === 'company' && orderData.companyDeliveryType === 'cod') ||
+    (orderData.deliveryMethod && String(orderData.deliveryMethod).toLowerCase().includes('cod'));
 
   // Category 2: ឈុតថ្នាំ (កំប៉ុង) + គ្រីម
-  // ថ្នាំ 1 + គ្រីម 1 = $5
-  // ថ្នាំ 2 + គ្រីម 2 = $10
-  // ថ្នាំ 3 + គ្រីម 3 = $15
-  // ថ្នាំ 5 + គ្រីម 5 = $25
-  if ((cans > 0 && tubes > 0) || prodType.includes('ថ្នាំ') || prodType.includes('កំប៉ុង') || pkgId.startsWith('combo_')) {
-    const pairs = cans > 0 && tubes > 0 ? Math.min(cans, tubes) : tubes;
-    if (pairs >= 5) return 25;
-    if (pairs === 3) return 15;
-    if (pairs === 2) return 10;
-    return 5;
+  // ថ្នាំ 2 + គ្រីម 2 = 90$  | ដឹកធម្មតា 10$  | បើCOD 9.5$
+  // ថ្នាំ 3 + គ្រីម 3 = 135$ | ដឹកធម្មតា 15$  | បើCOD 14.5$
+  // ថ្នាំ 5 + គ្រីម 5 = 180$ | ដឹកធម្មតា 25$  | បើCOD 24.5$
+  // ថ្នាំ 1 + គ្រីម 1 = 50$  | ដឹកធម្មតា 3$   | បើCOD 2.5$
+  if ((cans > 0 && tubes > 0) || prodType.includes('ថ្នាំ') || prodType.includes('កំប៉ុង') || pkgId.startsWith('combo_') || price >= 90) {
+    const pairs = cans > 0 && tubes > 0 ? Math.min(cans, tubes) : (cans > 0 ? cans : tubes);
+    if (pairs >= 5 || pkgId === 'combo_5_5' || price >= 180) return isCod ? 24.5 : 25;
+    if (pairs === 3 || pkgId === 'combo_3_3' || price >= 135) return isCod ? 14.5 : 15;
+    if (pairs === 2 || pkgId === 'combo_2_2' || price >= 90) return isCod ? 9.5 : 10;
+    return isCod ? 2.5 : 3;
   }
 
   // Category 1: ឈុតទីប
-  // ឈុត 1 ទីប = 1$
-  // ឈុត 2+1 ទីប (3 ទីប) = 2$
-  // ឈុត 3+3 ទីប (6 ទីប) = 3$
-  // ឈុត 5+5 ទីប (10 ទីប) = 5$
-  if (tubes === 1) return 1;
-  if (tubes === 3 || tubes === 2) return 2; // 2+1 = 3 tubes
-  if (tubes === 6 || tubes === 4 || tubes === 5) return 3; // 3+3 = 6 tubes
-  if (tubes >= 8) return 5; // 5+5 = 10 tubes
+  // ឈុត 1 ទីប = 1$ (COD 0.7$)
+  // ឈុត 2+1 ទីប (3 ទីប) = 2$ (COD 1.5$)
+  // ឈុត 3+3 ទីប (6 ទីប) = 3$ (COD 2.5$)
+  // ឈុត 5+5 ទីប (10 ទីប) = 5$ (COD 4.5$)
+  if (tubes === 1 || pkgId === 'set_1') return isCod ? 0.7 : 1;
+  if (tubes === 3 || tubes === 2 || pkgId === 'set_3') return isCod ? 1.5 : 2;
+  if (tubes === 6 || tubes === 4 || tubes === 5 || pkgId === 'set_6') return isCod ? 2.5 : 3;
+  if (tubes >= 8 || pkgId === 'set_10') return isCod ? 4.5 : 5;
 
-  const price = Number(orderData.price || 0);
-  if (price <= 15) return 1;
-  if (price <= 35) return 2;
-  if (price <= 65) return 3;
-  return 5;
+  if (price <= 17) return isCod ? 0.7 : 1;
+  if (price <= 30) return isCod ? 1.5 : 2;
+  if (price <= 50) return isCod ? 2.5 : 3;
+  if (price <= 70) return isCod ? 4.5 : 5;
+  if (price >= 180) return isCod ? 24.5 : 25;
+  if (price >= 135) return isCod ? 14.5 : 15;
+  if (price >= 90) return isCod ? 9.5 : 10;
+
+  return isCod ? 2.5 : 3;
 }
 
 function getCommissionMemberKeyboard(orderId) {
@@ -407,9 +430,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           await saveOrderToFirestore(completeOrder);
 
           if (isLeaderOrder) {
-            const pkgTitle = completeOrder.packageId === 'combo_1_1'
-              ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-              : `ឈុត ${completeOrder.tubes} ទីប`;
+            const pkgTitle = formatPackageTitle(completeOrder);
 
             const advisorLine = completeOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${completeOrder.advisorPhone}` : '';
             const productTypeLine = completeOrder.productType ? `\n🏷️ ប្រភេទ: ${completeOrder.productType}` : '';
@@ -445,9 +466,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
             : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
-          const pkgTitle = completeOrder.packageId === 'combo_1_1'
-            ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-            : `ឈុត ${completeOrder.tubes} ទីប`;
+          const pkgTitle = formatPackageTitle(completeOrder);
 
           const unitsDetail = completeOrder.cans > 0
             ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
@@ -589,9 +608,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
           : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
-        const pkgTitle = completeOrder.packageId === 'combo_1_1'
-          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${completeOrder.tubes} ទីប`;
+        const pkgTitle = formatPackageTitle(completeOrder);
 
         const unitsDetail = completeOrder.cans > 0
           ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
@@ -683,9 +700,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
           : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
 
-        const pkgTitle = updatedOrder.packageId === 'combo_1_1'
-          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${updatedOrder.tubes} ទីប`;
+        const pkgTitle = formatPackageTitle(updatedOrder);
 
         const unitsDetail = updatedOrder.cans > 0
           ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
@@ -775,9 +790,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
           : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
 
-        const pkgTitle = updatedOrder.packageId === 'combo_1_1'
-          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${updatedOrder.tubes} ទីប`;
+        const pkgTitle = formatPackageTitle(updatedOrder);
 
         const unitsDetail = updatedOrder.cans > 0
           ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
