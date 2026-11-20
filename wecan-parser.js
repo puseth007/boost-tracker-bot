@@ -414,10 +414,20 @@ function parseOrderText(text) {
 
   // Apply parsed price if valid and positive
   if (parsedPrice && parsedPrice > 0) {
-    selectedPkg = {
-      ...selectedPkg,
-      price: parsedPrice,
-    };
+    // If package was explicitly matched by item quantities (e.g. combo_3_3, combo_5_5, combo_2_2)
+    // but parsedPrice is a leftover mismatch from another tier (e.g. 20ម៉ឺន / $50 on a 3+3 combo),
+    // protect the official package price unless parsedPrice is within a reasonable range of this package.
+    const isMajorTierMismatch =
+      (selectedPkg.id === 'combo_3_3' && parsedPrice < 100) ||
+      (selectedPkg.id === 'combo_5_5' && parsedPrice < 150) ||
+      (selectedPkg.id === 'combo_2_2' && parsedPrice < 70);
+
+    if (!isMajorTierMismatch) {
+      selectedPkg = {
+        ...selectedPkg,
+        price: parsedPrice,
+      };
+    }
   }
 
   // Delivery Method & COD
