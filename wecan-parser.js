@@ -46,17 +46,17 @@ const SELLER_COMMISSION_RATES = {
     set_3: 2.0,
     set_6: 3.0,
     set_10: 5.0,
-    combo_1_1: 3.0,
+    combo_1_1: 5.0,
     combo_2_2: 10.0,
     combo_3_3: 15.0,
     combo_5_5: 25.0,
   },
   cod: {
-    set_1: 0.7,
+    set_1: 1.0,
     set_3: 1.5,
     set_6: 2.5,
     set_10: 4.5,
-    combo_1_1: 2.5,
+    combo_1_1: 4.5,
     combo_2_2: 9.5,
     combo_3_3: 14.5,
     combo_5_5: 24.5,
@@ -367,29 +367,40 @@ function parseOrderText(text) {
   const normPkg = normalizeKhmerDigits(packageRaw).toLowerCase();
   const fullTextNorm = normalizeKhmerDigits(text).toLowerCase();
 
+  // Recognize all synonyms & typos for pills/cans and cream:
+  // Pills/Cans: ថ្នាំ, ថ្វាំ (common typo), ឬសដូង, ឫសដូង, បួសដូង, កំប៉ុង, កំបុង
+  // Cream: ទីប, គ្រីម, គ្រីំម, គ្រឹម, cream, jp cream
+  const hasMedicineKeyword =
+    /ថ្នាំ|ថ្វាំ|ឬសដូង|ឫសដូង|បួសដូង|កំប៉ុង|កំបុង/i.test(normPkg) ||
+    /ថ្នាំ|ថ្វាំ|ឬសដូង|ឫសដូង|បួសដូង|កំប៉ុង|កំបុង/i.test(productType || '');
+
   const hasMedicineCombo =
-    (normPkg.includes('ឫសដូង') || normPkg.includes('ឬសដូង') || normPkg.includes('បួសដូង') || normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')) ||
-    (fullTextNorm.includes('ឫសដូង') || fullTextNorm.includes('ឬសដូង') || fullTextNorm.includes('បួសដូង') || (fullTextNorm.includes('ថ្នាំ') && fullTextNorm.includes('គ្រីម')));
+    hasMedicineKeyword ||
+    /ឬសដូង|ឫសដូង|បួសដូង|កំប៉ុង|កំបុង/i.test(fullTextNorm) ||
+    ((/ថ្នាំ|ថ្វាំ/i.test(fullTextNorm)) && (/គ្រីម|គ្រីំម|ទីប|cream/i.test(fullTextNorm)));
 
   let selectedPkg = PACKAGES[1]; // Default to set_3
 
   // Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
   if (
-    (hasMedicineCombo && (normPkg.includes('5') || normPkg.includes('៥') || fullTextNorm.includes('5+5') || fullTextNorm.includes('5ថ្នាំ'))) ||
+    (hasMedicineCombo && (normPkg.includes('5') || normPkg.includes('៥') || fullTextNorm.includes('5+5') || fullTextNorm.includes('5ថ្នាំ') || fullTextNorm.includes('5ថ្វាំ'))) ||
     parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190)
   ) {
     selectedPkg = PACKAGES.find((p) => p.id === 'combo_5_5') || PACKAGES[7];
   } else if (
-    (hasMedicineCombo && (normPkg.includes('3') || normPkg.includes('៣') || fullTextNorm.includes('3+3') || fullTextNorm.includes('3ថ្នាំ'))) ||
+    (hasMedicineCombo && (normPkg.includes('3') || normPkg.includes('៣') || fullTextNorm.includes('3+3') || fullTextNorm.includes('3ថ្នាំ') || fullTextNorm.includes('3ថ្វាំ'))) ||
     parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140)
   ) {
     selectedPkg = PACKAGES.find((p) => p.id === 'combo_3_3') || PACKAGES[6];
   } else if (
-    (hasMedicineCombo && (normPkg.includes('2') || normPkg.includes('២') || fullTextNorm.includes('2+2') || fullTextNorm.includes('2ថ្នាំ'))) ||
+    (hasMedicineCombo && (normPkg.includes('2') || normPkg.includes('២') || fullTextNorm.includes('2+2') || fullTextNorm.includes('2ថ្នាំ') || fullTextNorm.includes('2ថ្វាំ'))) ||
     parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95)
   ) {
     selectedPkg = PACKAGES.find((p) => p.id === 'combo_2_2') || PACKAGES[5];
-  } else if (hasMedicineCombo || (parsedPrice === 50 && (normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')))) {
+  } else if (
+    hasMedicineCombo ||
+    (parsedPrice === 50 && (/កំប៉ុង|កំបុង|ថ្នាំ|ថ្វាំ|ឬសដូង|ឫសដូង/i.test(normPkg) || /កំប៉ុង|កំបុង|ថ្នាំ|ថ្វាំ|ឬសដូង|ឫសដូង/i.test(fullTextNorm)))
+  ) {
     selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || PACKAGES[4];
   } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
     selectedPkg = PACKAGES[3]; // set_10 ($70)

@@ -39,6 +39,7 @@ try {
 // Module-level Cache for metadata
 let cachedSellers = [];
 let cachedGroups = [];
+let cachedSystemConfig = null;
 
 async function loadMetadata() {
   if (!db) return;
@@ -51,6 +52,11 @@ async function loadMetadata() {
     const teamsSnap = await getDoc(doc(db, 'metadata', 'teams'));
     if (teamsSnap.exists()) {
       cachedGroups = teamsSnap.data().groups || [];
+    }
+
+    const configSnap = await getDoc(doc(db, 'metadata', 'system_config'));
+    if (configSnap.exists()) {
+      cachedSystemConfig = configSnap.data();
     }
   } catch (err) {
     console.error('[WeCan Bot] Error loading metadata:', err.message);
@@ -297,30 +303,50 @@ function calculateOrderCommission(orderData) {
     (orderData.deliveryMethod === 'company' && orderData.companyDeliveryType === 'cod') ||
     (orderData.deliveryMethod && String(orderData.deliveryMethod).toLowerCase().includes('cod'));
 
+  // 1. Dynamic Check from Firestore system_config if available
+  if (cachedSystemConfig && cachedSystemConfig.sellerCommissions) {
+    const commGroup = isCod ? cachedSystemConfig.sellerCommissions.cod : cachedSystemConfig.sellerCommissions.standard;
+    if (commGroup && pkgId && commGroup[pkgId] !== undefined) {
+      return Number(commGroup[pkgId]);
+    }
+  }
+
+  // 2. Default Commission Rules:
   // Category 2: ឈុតថ្នាំ (កំប៉ុង) + គ្រីម
-  // ថ្នាំ 2 + គ្រីម 2 = 90$  | ដឹកធម្មតា 10$  | បើCOD 9.5$
-  // ថ្នាំ 3 + គ្រីម 3 = 135$ | ដឹកធម្មតា 15$  | បើCOD 14.5$
-  // ថ្នាំ 5 + គ្រីម 5 = 180$ | ដឹកធម្មតា 25$  | បើCOD 24.5$
-  // ថ្នាំ 1 + គ្រីម 1 = 50$  | ដឹកធម្មតា 3$   | បើCOD 2.5$
-  if ((cans > 0 && tubes > 0) || prodType.includes('ថ្នាំ') || prodType.includes('កំប៉ុង') || pkgId.startsWith('combo_') || price >= 90) {
+  // ថ្នាំ 5 + គ្រីម 5 ($180): ដឹកធម្មតា 25$  | បើCOD 24.5$
+  // ថ្នាំ 3 + គ្រីម 3 ($135): ដឹកធម្មតា 15$  | បើCOD 14.5$
+  // ថ្នាំ 2 + គ្រីម 2 ($90):  ដឹកធម្មតា 10$  | បើCOD 9.5$
+  // ថ្នាំ 1 + គ្រីម 1 ($50):  ដឹកធម្មតា 5$   | បើCOD 4.5$
+  const isMedicineCombo =
+    (cans > 0 && tubes > 0) ||
+    prodType.includes('ថ្នាំ') ||
+    prodType.includes('កំប៉ុង') ||
+    prodType.includes('ថ្វាំ') ||
+    prodType.includes('ឬសដូង') ||
+    prodType.includes('ឫសដូង') ||
+    prodType.includes('បួសដូង') ||
+    pkgId.startsWith('combo_') ||
+    price >= 90;
+
+  if (isMedicineCombo) {
     const pairs = cans > 0 && tubes > 0 ? Math.min(cans, tubes) : (cans > 0 ? cans : tubes);
     if (pairs >= 5 || pkgId === 'combo_5_5' || price >= 180) return isCod ? 24.5 : 25;
     if (pairs === 3 || pkgId === 'combo_3_3' || price >= 135) return isCod ? 14.5 : 15;
     if (pairs === 2 || pkgId === 'combo_2_2' || price >= 90) return isCod ? 9.5 : 10;
-    return isCod ? 2.5 : 3;
+    return isCod ? 4.5 : 5;
   }
 
-  // Category 1: ឈុតទីប
-  // ឈុត 1 ទីប = 1$ (COD 0.7$)
-  // ឈុត 2+1 ទីប (3 ទីប) = 2$ (COD 1.5$)
-  // ឈុត 3+3 ទីប (6 ទីប) = 3$ (COD 2.5$)
-  // ឈុត 5+5 ទីប (10 ទីប) = 5$ (COD 4.5$)
-  if (tubes === 1 || pkgId === 'set_1') return isCod ? 0.7 : 1;
+  // Category 1: ឈុតទីបគ្រីម
+  // ឈុត 1 ទីប (17$):        ដឹកធម្មតា 1$ | បើCOD 1$
+  // ឈុត 2+1 ទីប (3 ទីប, 30$): ដឹកធម្មតា 2$ | បើCOD 1.5$
+  // ឈុត 3+3 ទីប (6 ទីប, 50$): ដឹកធម្មតា 3$ | បើCOD 2.5$
+  // ឈុត 5+5 ទីប (10 ទីប, 70$): ដឹកធម្មតា 5$ | បើCOD 4.5$
+  if (tubes === 1 || pkgId === 'set_1') return isCod ? 1 : 1;
   if (tubes === 3 || tubes === 2 || pkgId === 'set_3') return isCod ? 1.5 : 2;
   if (tubes === 6 || tubes === 4 || tubes === 5 || pkgId === 'set_6') return isCod ? 2.5 : 3;
   if (tubes >= 8 || pkgId === 'set_10') return isCod ? 4.5 : 5;
 
-  if (price <= 17) return isCod ? 0.7 : 1;
+  if (price <= 17) return isCod ? 1 : 1;
   if (price <= 30) return isCod ? 1.5 : 2;
   if (price <= 50) return isCod ? 2.5 : 3;
   if (price <= 70) return isCod ? 4.5 : 5;
@@ -328,7 +354,7 @@ function calculateOrderCommission(orderData) {
   if (price >= 135) return isCod ? 14.5 : 15;
   if (price >= 90) return isCod ? 9.5 : 10;
 
-  return isCod ? 2.5 : 3;
+  return isCod ? 4.5 : 5;
 }
 
 function getCommissionMemberKeyboard(orderId, memberList) {
