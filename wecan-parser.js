@@ -67,19 +67,19 @@ const SELLER_COMMISSION_RATES = {
 function normalizeSellerName(name) {
   if (!name) return 'ទូទៅ';
   const clean = name.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').trim();
-  if (clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង')) {
-    return 'ស៊ីង អ៊ី';
+  if (clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង') || clean.includes('សឹង')) {
+    return 'ស៊ីង អុឺ';
   }
   if (clean.includes('ណាក់') || clean.includes('ចំរើន')) {
     return 'ណាក់ ចំរើន';
   }
-  if (clean === 'ឡាបុប្ផា' || clean.includes('បុប្ផា')) {
+  if (clean === 'ឡាបុប្ផា' || clean.includes('បុប្ផា') || clean.includes('បុប្ជា')) {
     return 'ឡា បុប្ផា';
   }
   if (clean === 'ឡាធីតា' || (clean.includes('ឡា') && clean.includes('ធីតា'))) {
     return 'ឡា ធីតា';
   }
-  if (clean === 'ប្រាក់សុថានី' || clean.includes('សុថានី')) {
+  if (clean === 'ប្រាក់សុថានី' || clean.includes('សុថានី') || clean.includes('សុផានី')) {
     return 'ប្រាក់ សុថានី';
   }
   return name.replace(/[\u200B\u200C\u200D\uFE0E\uFE0F]+/g, '').replace(/\s+/g, ' ').trim();
@@ -98,13 +98,14 @@ function detectTeamLeader(rawText = '', sellerName = '') {
           .trim();
         if (extracted) {
           if (/ឡា\s*ធីតា/i.test(extracted)) return 'ឡា ធីតា';
-          if (/ឡា\s*បុប្ផា/i.test(extracted)) return 'ឡា បុប្ផា';
+          if (/ឡា\s*បុប្ផា|បុប្ជា/i.test(extracted)) return 'ឡា បុប្ផា';
+          if (/ប្រាក់\s*សុថានី|សុផានី/i.test(extracted)) return 'ប្រាក់ សុថានី';
           if (/ផល\s*សុម៉ាលីតា/i.test(extracted)) return 'ផល សុម៉ាលីតា';
           if (/ឆេង\s*សម្ភស្ស/i.test(extracted)) return 'ឆេង សម្ភស្ស';
           if (/ឆេង\s*រ៉ាឈីត/i.test(extracted)) return 'ឆេង រ៉ាឈីត';
           if (/ឆេង\s*ចិន្តា/i.test(extracted)) return 'ឆេង ចិន្តា';
           if (/វណ្ណ\s*ធីតា/i.test(extracted)) return 'វណ្ណ ធីតា';
-          if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(extracted)) return 'ស៊ីង អ៊ី';
+          if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង|សឹង/i.test(extracted)) return 'ស៊ីង អុឺ';
           return extracted;
         }
       }
@@ -114,13 +115,14 @@ function detectTeamLeader(rawText = '', sellerName = '') {
     for (const line of lines) {
       if (/ថ្នាក់ដឹកនាំ|មេក្រុម|team/i.test(line)) {
         if (/ឡា\s*ធីតា/i.test(line)) return 'ឡា ធីតា';
-        if (/ឡា\s*បុប្ផា/i.test(line)) return 'ឡា បុប្ផា';
+        if (/ឡា\s*បុប្ផា|បុប្ជា/i.test(line)) return 'ឡា បុប្ផា';
+        if (/ប្រាក់\s*សុថានី|សុផានី/i.test(line)) return 'ប្រាក់ សុថានី';
         if (/ផល\s*សុម៉ាលីតា/i.test(line)) return 'ផល សុម៉ាលីតា';
         if (/ឆេង\s*សម្ភស្ស/i.test(line)) return 'ឆេង សម្ភស្ស';
         if (/ឆេង\s*រ៉ាឈីត/i.test(line)) return 'ឆេង រ៉ាឈីត';
         if (/ឆេង\s*ចិន្តា/i.test(line)) return 'ឆេង ចិន្តា';
         if (/វណ្ណ\s*ធីតា/i.test(line)) return 'វណ្ណ ធីតា';
-        if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង/i.test(line)) return 'សុីង អុឺ';
+        if (/ស៊ីង|សុីង|ស៊ឹង|សុឺង|សឹង/i.test(line)) return 'ស៊ីង អុឺ';
       }
     }
   }

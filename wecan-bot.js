@@ -10,6 +10,7 @@ const {
   getDocs,
   query,
   where,
+  onSnapshot,
 } = require('firebase/firestore');
 const { parseOrderText, buildCompleteOrder } = require('./wecan-parser');
 
@@ -46,7 +47,7 @@ async function loadMetadata() {
   try {
     const sellersSnap = await getDoc(doc(db, 'metadata', 'sellers'));
     if (sellersSnap.exists()) {
-      cachedSellers = sellersSnap.data().names || [];
+      cachedSellers = sellersSnap.data().names || sellersSnap.data().list || [];
     }
 
     const teamsSnap = await getDoc(doc(db, 'metadata', 'teams'));
@@ -58,6 +59,25 @@ async function loadMetadata() {
     if (configSnap.exists()) {
       cachedSystemConfig = configSnap.data();
     }
+
+    // Real-time synchronization for changes from web dashboard
+    onSnapshot(doc(db, 'metadata', 'sellers'), (snap) => {
+      if (snap.exists()) {
+        cachedSellers = snap.data().names || snap.data().list || [];
+      }
+    }, (err) => console.error('[WeCan Bot] sellers onSnapshot error:', err.message));
+
+    onSnapshot(doc(db, 'metadata', 'teams'), (snap) => {
+      if (snap.exists()) {
+        cachedGroups = snap.data().groups || [];
+      }
+    }, (err) => console.error('[WeCan Bot] teams onSnapshot error:', err.message));
+
+    onSnapshot(doc(db, 'metadata', 'system_config'), (snap) => {
+      if (snap.exists()) {
+        cachedSystemConfig = snap.data();
+      }
+    }, (err) => console.error('[WeCan Bot] config onSnapshot error:', err.message));
   } catch (err) {
     console.error('[WeCan Bot] Error loading metadata:', err.message);
   }
@@ -104,19 +124,46 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   ];
 }
 
+// Smart phonetic normalization for Khmer seller & leader names
+function normalizeNameForComparison(name) {
+  if (!name) return '';
+  let clean = String(name)
+    .replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D\-_:.]+/gu, '')
+    .toLowerCase();
+
+  // Normalize all spelling variants of Sing Eu / Seung Eu:
+  if (clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង') || clean.includes('សឹង')) {
+    return 'sing_eu_canonical';
+  }
+  // Normalize Prak Sothany:
+  if (clean.includes('សុថានី') || clean.includes('សុផានី')) {
+    return 'prak_sothany_canonical';
+  }
+  // Normalize La Bopha:
+  if (clean.includes('បុប្ផា') || clean.includes('បុប្ជា')) {
+    return 'la_bopha_canonical';
+  }
+  // Normalize La Thida:
+  if (clean.includes('ឡា') && clean.includes('ធីតា')) {
+    return 'la_thida_canonical';
+  }
+
+  return clean;
+}
+
 // Canonical Seller Name Resolver (Handles spacing variations like ឡាបុប្ផា vs ឡា បុប្ផា)
 function getCanonicalSellerName(name) {
   if (!name) return 'ទូទៅ';
-  const nNorm = name.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  const nNorm = normalizeNameForComparison(name);
 
   // 1. Check in cachedGroups leaders and members
   if (Array.isArray(cachedGroups)) {
     for (const g of cachedGroups) {
-      const leadNorm = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      const leadNorm = normalizeNameForComparison(g.leaderName);
       if (leadNorm && nNorm === leadNorm) return g.leaderName;
       for (const m of (g.members || [])) {
         const mName = typeof m === 'object' ? m.name : m;
-        const mNorm = (mName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        const mNorm = normalizeNameForComparison(mName);
         if (mNorm && nNorm === mNorm) return mName;
       }
     }
@@ -126,20 +173,21 @@ function getCanonicalSellerName(name) {
   if (Array.isArray(cachedSellers)) {
     for (const s of cachedSellers) {
       const sName = typeof s === 'object' ? s.name : s;
-      const sNorm = (sName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      const sNorm = normalizeNameForComparison(sName);
       if (sNorm && nNorm === sNorm) return sName;
     }
   }
 
   // 3. Fallback for common unspaced leader/member names
   const knownNames = [
-    'ឡា បុប្ផា', 'ឡា ធីតា', 'ប្រាក់ សុថានី', 'ស៊ីង អ៊ី', 'វី សៅបេន',
+    'ឡា បុប្ផា', 'ឡា ធីតា', 'ប្រាក់ សុថានី', 'ស៊ីង អុឺ', 'វី សៅបេន',
     'កៅ យ៉ារីន', 'សាន់ សូលីដា', 'វ៉ា កក្កដា', 'ឃីន ម៉ាលី', 'សឿន ចាន់',
     'សឿន សារ៉ុម', 'តេង សុវណ្ណរត្ន័', 'រ៉េន ស្រីណេត', 'សយ ស្រីណេត',
-    'ផល្លី ស្រីណែត', 'ប្រាក់ សុផាន់ណា', 'ព្រុំ វុទ្ធី', 'ឃីន យុន'
+    'ផល្លី ស្រីណែត', 'ប្រាក់ សុផាន់ណា', 'ព្រុំ វុទ្ធី', 'ឃីន យុន',
+    'ឡា ស្រីកា', 'ស្រី នួ', 'ពូ ពន្លក', 'ជុំ ស្រីណុច', 'ចែ ពៅ', 'អុី ឈៀង', 'បូរី', 'សៅ វ៉ាន់ណេត', 'ណាក់ ចំរើន'
   ];
   for (const k of knownNames) {
-    const kNorm = k.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+    const kNorm = normalizeNameForComparison(k);
     if (kNorm === nNorm) return k;
   }
 
@@ -149,12 +197,12 @@ function getCanonicalSellerName(name) {
 // Dynamic Team & Leader Resolver from Firestore metadata (100% Unified Architecture)
 function getTeamLeaderInfo(sellerName) {
   if (!sellerName) return null;
-  const sNorm = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  const sNorm = normalizeNameForComparison(sellerName);
 
   // 1. Check in cachedGroups (metadata/teams)
   if (Array.isArray(cachedGroups)) {
     for (const g of cachedGroups) {
-      const leadNorm = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      const leadNorm = normalizeNameForComparison(g.leaderName);
       if (leadNorm && (sNorm === leadNorm || sNorm.includes(leadNorm) || leadNorm.includes(sNorm))) {
         return {
           isLeader: true,
@@ -170,7 +218,7 @@ function getTeamLeaderInfo(sellerName) {
   if (Array.isArray(cachedSellers)) {
     for (const s of cachedSellers) {
       if (typeof s === 'object' && s) {
-        const sNameNorm = (s.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        const sNameNorm = normalizeNameForComparison(s.name);
         if (sNameNorm && (sNorm === sNameNorm || sNorm.includes(sNameNorm) || sNameNorm.includes(sNorm))) {
           if (s.role === 'team_leader' || s.role === 'big_leader') {
             return {
@@ -190,14 +238,14 @@ function getTeamLeaderInfo(sellerName) {
 
 function getMemberTeamInfo(sellerName) {
   if (!sellerName) return null;
-  const sNorm = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  const sNorm = normalizeNameForComparison(sellerName);
 
   // 1. Check in cachedGroups
   if (Array.isArray(cachedGroups)) {
     for (const g of cachedGroups) {
       for (const m of (g.members || [])) {
         const mName = typeof m === 'object' ? m.name : m;
-        const mNorm = (mName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        const mNorm = normalizeNameForComparison(mName);
         if (mNorm && (sNorm === mNorm || sNorm.includes(mNorm) || mNorm.includes(sNorm))) {
           const sellMode = typeof m === 'object' ? (m.sellMode || m.mode || 'solo') : 'solo';
           return {
@@ -216,7 +264,7 @@ function getMemberTeamInfo(sellerName) {
   if (Array.isArray(cachedSellers)) {
     for (const s of cachedSellers) {
       if (typeof s === 'object' && s) {
-        const sNameNorm = (s.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        const sNameNorm = normalizeNameForComparison(s.name);
         if (sNameNorm && (sNorm === sNameNorm || sNorm.includes(sNameNorm) || sNameNorm.includes(sNorm))) {
           if (s.teamLeader || s.teamGroup) {
             return {
@@ -236,12 +284,12 @@ function getMemberTeamInfo(sellerName) {
 
 function getCommissionMembersForLeader(leaderName) {
   if (!leaderName) return [];
-  const lNorm = leaderName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+  const lNorm = normalizeNameForComparison(leaderName);
 
   // Dynamic from cachedGroups (metadata/teams)
   if (Array.isArray(cachedGroups)) {
     const foundGroup = cachedGroups.find((g) => {
-      const lead = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      const lead = normalizeNameForComparison(g.leaderName);
       return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
     });
 
@@ -249,7 +297,7 @@ function getCommissionMembersForLeader(leaderName) {
       const nonLeaderMembers = foundGroup.members
         .map((m) => (typeof m === 'object' ? m : { name: m, mode: 'solo', sellMode: 'solo' }))
         .filter((m) => {
-          const mNorm = (m.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+          const mNorm = normalizeNameForComparison(m.name);
           return mNorm && mNorm !== lNorm && !lNorm.includes(mNorm);
         });
 
@@ -268,7 +316,7 @@ function getCommissionMembersForLeader(leaderName) {
     const members = cachedSellers
       .filter((s) => typeof s === 'object' && s && s.teamLeader)
       .filter((s) => {
-        const lead = s.teamLeader.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        const lead = normalizeNameForComparison(s.teamLeader);
         return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
       })
       .map((s) => s.name);
