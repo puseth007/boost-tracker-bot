@@ -218,9 +218,14 @@ function parseOrderText(text) {
     }
     // Advisor phone: អ្នកប្រឹក្សា: ...
     else if (/អ្នកប្រឹក្សា/i.test(line)) {
-      const match = line.match(/(0\d{8,9})/);
-      if (match) {
-        advisorPhone = match[1];
+      const digits = line.replace(/\D/g, '');
+      if (digits.startsWith('0') && (digits.length === 9 || digits.length === 10)) {
+        advisorPhone = digits;
+      } else {
+        const match = line.match(/(0\d{8,9})/);
+        if (match) {
+          advisorPhone = match[1];
+        }
       }
     }
     // Customer phone: អ្នកទទួល: ...
