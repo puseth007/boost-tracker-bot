@@ -124,6 +124,50 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   ];
 }
 
+function getPaymentConfirmKeyboard(orderId, targetStatus) {
+  const isPaid = targetStatus === 'paid';
+  const label = isPaid ? '🟢 បានទូទាត់' : '🟠 មិនទាន់ទូទាត់';
+  return [
+    [
+      {
+        text: `❓ បញ្ជាក់៖ ប្ដូរទៅ «${label}» ?`,
+        callback_data: 'noop_info',
+      },
+    ],
+    [
+      {
+        text: '✅ បាទ/ចាស បញ្ជាក់',
+        callback_data: `tgpay_confirm:${orderId}:${targetStatus}`,
+      },
+      {
+        text: '🔙 ថយក្រោយ (កុំប្ដូរ)',
+        callback_data: `tgpay_back:${orderId}`,
+      },
+    ],
+  ];
+}
+
+function getCancelConfirmKeyboard(orderId) {
+  return [
+    [
+      {
+        text: '⚠️ តើអ្នកពិតជាចង់បោះបង់ Order នេះមែនទេ?',
+        callback_data: 'noop_info',
+      },
+    ],
+    [
+      {
+        text: '🗑️ បាទ/ចាស បោះបង់ (លុបចោល)',
+        callback_data: `tgcancel_confirm:${orderId}`,
+      },
+      {
+        text: '🔙 ថយក្រោយ (កុំលុប)',
+        callback_data: `tgpay_back:${orderId}`,
+      },
+    ],
+  ];
+}
+
 // Smart phonetic normalization for Khmer seller & leader names
 function normalizeNameForComparison(name) {
   if (!name) return '';
@@ -1059,7 +1103,73 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       return;
     }
 
-    if (data.startsWith('tgpay:')) {
+    // Payment status change request -> Ask confirmation first
+    if (data.startsWith('tgpay:') && !data.startsWith('tgpay_confirm:') && !data.startsWith('tgpay_back:')) {
+      const parts = data.split(':');
+      const orderId = parts[1];
+      const targetStatus = parts[2];
+
+      if (!db) {
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: 'Database មិនទាន់ដំណើរការ!',
+          show_alert: true,
+        });
+      }
+
+      try {
+        const orderRef = doc(db, 'orders', orderId);
+        const orderSnap = await getDoc(orderRef);
+        if (!orderSnap.exists()) {
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ!',
+            show_alert: true,
+          });
+        }
+
+        const existingOrder = orderSnap.data();
+        if (existingOrder.paymentStatus === targetStatus) {
+          const statusText = targetStatus === 'paid' ? 'បានទូទាត់' : 'មិនទាន់ទូទាត់';
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: `ការកុម្ម៉ង់នេះស្ថិតក្នុងស្ថានភាព «${statusText}» រួចហើយ!`,
+          });
+        }
+
+        await bot.answerCallbackQuery(queryMsg.id, {
+          text: 'សូមចុចបញ្ជាក់ខាងក្រោម 👇',
+        });
+
+        return bot.editMessageReplyMarkup(
+          { inline_keyboard: getPaymentConfirmKeyboard(orderId, targetStatus) },
+          { chat_id: chatId, message_id: messageId }
+        ).catch(() => {});
+      } catch (e) {
+        bot.answerCallbackQuery(queryMsg.id, { text: `កំហុស: ${e.message}`, show_alert: true }).catch(() => {});
+      }
+      return;
+    }
+
+    // Cancel payment change -> Return back to normal keyboard
+    if (data.startsWith('tgpay_back:')) {
+      const orderId = data.replace('tgpay_back:', '');
+      try {
+        const orderRef = doc(db, 'orders', orderId);
+        const orderSnap = await getDoc(orderRef);
+        const currentStatus = orderSnap.exists() ? (orderSnap.data().paymentStatus || 'unpaid') : 'unpaid';
+
+        await bot.answerCallbackQuery(queryMsg.id, { text: '🔙 បានត្រឡប់ក្រោយវិញ' });
+
+        return bot.editMessageReplyMarkup(
+          { inline_keyboard: getPaymentInlineKeyboard(orderId, currentStatus) },
+          { chat_id: chatId, message_id: messageId }
+        ).catch(() => {});
+      } catch (e) {
+        bot.answerCallbackQuery(queryMsg.id, { text: `កំហុស: ${e.message}`, show_alert: true }).catch(() => {});
+      }
+      return;
+    }
+
+    // Confirmed payment status change
+    if (data.startsWith('tgpay_confirm:')) {
       const parts = data.split(':');
       const orderId = parts[1];
       const newStatus = parts[2];
@@ -1093,7 +1203,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const statusLabel = newStatus === 'paid' ? '🟢 បានទូទាត់' : '🟠 មិនទាន់ទូទាត់';
         await bot.answerCallbackQuery(queryMsg.id, {
-          text: `ប្ដូរទៅ៖ ${statusLabel} រួចរាល់!`,
+          text: `✅ បានប្ដូរទៅ៖ ${statusLabel} រួចរាល់!`,
         });
 
         const payBadge = newStatus === 'paid'
@@ -1117,9 +1227,14 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
 
+        const isStaff = isStaffMember(updatedOrder.commissionSeller || updatedOrder.actualSeller);
         const sellerLine = updatedOrder.commissionSeller
-          ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`
-          : `\n👨‍💼 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}`;
+          ? (isStaff
+              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.commissionSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`)
+          : (isStaff && updatedOrder.actualSeller && updatedOrder.actualSeller !== updatedOrder.sellerName
+              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.actualSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}`);
 
         const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
@@ -1152,9 +1267,22 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       return;
     }
 
-    // Cancel order handler
-    if (data.startsWith('tgcancel:')) {
+    // Cancel order request -> Ask confirmation first
+    if (data.startsWith('tgcancel:') && !data.startsWith('tgcancel_confirm:')) {
       const orderId = data.replace('tgcancel:', '');
+      await bot.answerCallbackQuery(queryMsg.id, {
+        text: '⚠️ សូមចុចបញ្ជាក់ការបោះបង់ខាងក្រោម 👇',
+      });
+
+      return bot.editMessageReplyMarkup(
+        { inline_keyboard: getCancelConfirmKeyboard(orderId) },
+        { chat_id: chatId, message_id: messageId }
+      ).catch(() => {});
+    }
+
+    // Confirmed cancel order
+    if (data.startsWith('tgcancel_confirm:')) {
+      const orderId = data.replace('tgcancel_confirm:', '');
       try {
         if (!db) throw new Error('Database not connected');
         const orderRef = doc(db, 'orders', orderId);
@@ -1192,6 +1320,12 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           show_alert: true,
         });
       }
+    }
+
+    if (data === 'noop_info') {
+      return bot.answerCallbackQuery(queryMsg.id, {
+        text: 'សូមចុចប៊ូតុងបញ្ជាក់ ឬថយក្រោយខាងក្រោម',
+      });
     }
 
     if (data === 'noop') {
