@@ -35,6 +35,28 @@ try {
   console.error('❌ [WeCan Bot] Firebase initialization error:', e.message);
 }
 
+// Module-level Cache for metadata
+let cachedSellers = [];
+let cachedGroups = [];
+
+async function loadMetadata() {
+  if (!db) return;
+  try {
+    const sellersSnap = await getDoc(doc(db, 'metadata', 'sellers'));
+    if (sellersSnap.exists()) {
+      cachedSellers = sellersSnap.data().names || [];
+    }
+
+    const teamsSnap = await getDoc(doc(db, 'metadata', 'teams'));
+    if (teamsSnap.exists()) {
+      cachedGroups = teamsSnap.data().groups || [];
+    }
+  } catch (err) {
+    console.error('[WeCan Bot] Error loading metadata:', err.message);
+  }
+}
+loadMetadata();
+
 function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   if (isInitial) {
     return [
@@ -66,7 +88,7 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   ];
 }
 
-// Dynamic Team & Leader Resolver from Firestore metadata
+// Dynamic Team & Leader Resolver from Firestore metadata (100% Unified Architecture)
 function getTeamLeaderInfo(sellerName) {
   if (!sellerName) return null;
   const sNorm = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
@@ -105,16 +127,6 @@ function getTeamLeaderInfo(sellerName) {
     }
   }
 
-  // Fallback for Prak Sothany if not yet in cache
-  if (sNorm.includes('សុថានី')) {
-    return {
-      isLeader: true,
-      leaderName: 'ប្រាក់ សុថានី',
-      groupName: 'ក្រុម ប្រាក់ សុថានី',
-      group: null,
-    };
-  }
-
   return null;
 }
 
@@ -129,11 +141,12 @@ function getMemberTeamInfo(sellerName) {
         const mName = typeof m === 'object' ? m.name : m;
         const mNorm = (mName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
         if (mNorm && (sNorm === mNorm || sNorm.includes(mNorm) || mNorm.includes(sNorm))) {
+          const sellMode = typeof m === 'object' ? (m.sellMode || m.mode || 'solo') : 'solo';
           return {
             isLeader: false,
             leaderName: g.leaderName,
             groupName: g.name,
-            sellMode: typeof m === 'object' ? m.sellMode || 'solo' : 'solo',
+            sellMode,
           };
         }
       }
@@ -166,12 +179,7 @@ function getCommissionMembersForLeader(leaderName) {
   if (!leaderName) return [];
   const lNorm = leaderName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
 
-  // Special config for Prak Sothany
-  if (lNorm.includes('សុថានី')) {
-    return ['កៅ យ៉ារីន', 'សាន់ សូលីដា'];
-  }
-
-  // Dynamic from cachedGroups
+  // Dynamic from cachedGroups (metadata/teams)
   if (Array.isArray(cachedGroups)) {
     const foundGroup = cachedGroups.find((g) => {
       const lead = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
@@ -180,25 +188,29 @@ function getCommissionMembersForLeader(leaderName) {
 
     if (foundGroup && Array.isArray(foundGroup.members) && foundGroup.members.length > 0) {
       const nonLeaderMembers = foundGroup.members
-        .map((m) => (typeof m === 'object' ? m : { name: m, sellMode: 'solo' }))
+        .map((m) => (typeof m === 'object' ? m : { name: m, mode: 'solo', sellMode: 'solo' }))
         .filter((m) => {
           const mNorm = (m.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
           return mNorm && mNorm !== lNorm && !lNorm.includes(mNorm);
         });
 
-      const withLeader = nonLeaderMembers.filter((m) => m.sellMode === 'with_leader');
+      // Filter members who sell with the leader (mode === 'with_leader' or sellMode === 'with_leader')
+      const withLeader = nonLeaderMembers.filter(
+        (m) => m.sellMode === 'with_leader' || m.mode === 'with_leader'
+      );
       const target = withLeader.length > 0 ? withLeader : nonLeaderMembers;
-      return target.map((m) => m.name);
+      const result = target.map((m) => (typeof m === 'object' ? m.name : m)).filter(Boolean);
+      if (result.length > 0) return result;
     }
   }
 
-  // Fallback: check cachedSellers
+  // Fallback: check cachedSellers (metadata/sellers)
   if (Array.isArray(cachedSellers)) {
     const members = cachedSellers
       .filter((s) => typeof s === 'object' && s && s.teamLeader)
       .filter((s) => {
         const lead = s.teamLeader.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
-        return lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm);
+        return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
       })
       .map((s) => s.name);
     if (members.length > 0) return members;
@@ -381,26 +393,7 @@ function startWeCanBot() {
     console.log('[WeCan Bot Polling notice]:', err.code || err.message);
   });
 
-  let cachedSellers = [];
-  let cachedGroups = [];
   const pendingOrders = new Map();
-
-  async function loadMetadata() {
-    if (!db) return;
-    try {
-      const sellersSnap = await getDoc(doc(db, 'metadata', 'sellers'));
-      if (sellersSnap.exists()) {
-        cachedSellers = sellersSnap.data().names || [];
-      }
-
-      const teamsSnap = await getDoc(doc(db, 'metadata', 'teams'));
-      if (teamsSnap.exists()) {
-        cachedGroups = teamsSnap.data().groups || [];
-      }
-    } catch (err) {
-      console.error('[WeCan Bot] Error loading metadata:', err.message);
-    }
-  }
   loadMetadata();
 
   async function getNextOrderNumber() {

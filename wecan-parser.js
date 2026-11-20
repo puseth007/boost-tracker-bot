@@ -73,7 +73,7 @@ function normalizeSellerName(name) {
   if (clean.includes('ណាក់') || clean.includes('ចំរើន')) {
     return 'ណាក់ ចំរើន';
   }
-  return name.trim();
+  return name.replace(/[\u200B\u200C\u200D\uFE0E\uFE0F]+/g, '').replace(/\s+/g, ' ').trim();
 }
 
 // Detect which Team Leader an order belongs to
