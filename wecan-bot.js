@@ -301,11 +301,11 @@ function getCommissionMembersForLeader(leaderName) {
           return mNorm && mNorm !== lNorm && !lNorm.includes(mNorm);
         });
 
-      // Filter members who sell with the leader (mode === 'with_leader' or sellMode === 'with_leader')
-      const withLeader = nonLeaderMembers.filter(
-        (m) => m.sellMode === 'with_leader' || m.mode === 'with_leader'
+      // Filter members who sell with the leader or are salaried staff
+      const eligible = nonLeaderMembers.filter(
+        (m) => m.sellMode === 'with_leader' || m.mode === 'with_leader' || m.sellMode === 'staff' || m.mode === 'staff'
       );
-      const target = withLeader.length > 0 ? withLeader : nonLeaderMembers;
+      const target = eligible.length > 0 ? eligible : nonLeaderMembers;
       const result = target.map((m) => (typeof m === 'object' ? m.name : m)).filter(Boolean);
       if (result.length > 0) return result;
     }
@@ -324,6 +324,39 @@ function getCommissionMembersForLeader(leaderName) {
   }
 
   return [];
+}
+
+// Check if a member is a salaried staff (does not receive sales commission)
+function isStaffMember(memberName) {
+  if (!memberName) return false;
+  const mNorm = normalizeNameForComparison(memberName);
+
+  // 1. Check in cachedGroups
+  if (Array.isArray(cachedGroups)) {
+    for (const g of cachedGroups) {
+      for (const m of (g.members || [])) {
+        const mName = typeof m === 'object' ? m.name : m;
+        if (normalizeNameForComparison(mName) === mNorm) {
+          if (typeof m === 'object' && (m.mode === 'staff' || m.sellMode === 'staff')) return true;
+        }
+      }
+    }
+  }
+
+  // 2. Check in cachedSellers
+  if (Array.isArray(cachedSellers)) {
+    for (const s of cachedSellers) {
+      if (typeof s === 'object' && s) {
+        if (normalizeNameForComparison(s.name) === mNorm) {
+          if (s.role === 'staff' || s.sellMode === 'staff' || (typeof s.salary === 'number' && s.salary > 0)) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+
+  return false;
 }
 
 function formatPackageTitle(order) {
@@ -946,10 +979,19 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           const idx = parseInt(targetIdx, 10);
           const members = getCommissionMembersForLeader(orderData.sellerName || orderData.teamLeader);
           selectedMember = members[idx] || 'កូនក្រុម';
-          commAmount = calculateOrderCommission(orderData);
-          isCommission = true;
-          await bot.answerCallbackQuery(queryMsg.id, { text: '✅ ' + selectedMember + ' (កម្រៃ +$' + commAmount + ')' });
+
+          if (isStaffMember(selectedMember)) {
+            commAmount = 0;
+            isCommission = false;
+            await bot.answerCallbackQuery(queryMsg.id, { text: `✅ ${selectedMember} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)` });
+          } else {
+            commAmount = calculateOrderCommission(orderData);
+            isCommission = true;
+            await bot.answerCallbackQuery(queryMsg.id, { text: `✅ ${selectedMember} (កម្រៃ +$${commAmount})` });
+          }
         }
+
+        const isStaff = !isCommission && targetIdx !== 'self' && isStaffMember(selectedMember);
 
         const updatedOrder = {
           ...orderData,
@@ -984,7 +1026,9 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
         const sellerLine = isCommission
           ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${selectedMember}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${commAmount}.00 💸`
-          : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (លក់ផ្ទាល់ខ្លួន)`;
+          : (isStaff
+              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${selectedMember} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (លក់ផ្ទាល់ខ្លួន)`);
 
         const updatedMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
