@@ -59,7 +59,7 @@ const dbTeamUnits = getFirestore(teamUnitsApp);
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('🚀 Boost & Sales Tracker Multi-Bot Server is Online (Shop 1 & Shop 2) 24/7!');
+  res.end('🚀 Boost & Sales Tracker Multi-Bot Server is Online (Build: v2.2.0-dynamic-combos-cancel-btn) 24/7!');
 }).listen(PORT, () => {
   console.log(`📡 Cloud Health Check Server is running on port ${PORT}`);
 });
