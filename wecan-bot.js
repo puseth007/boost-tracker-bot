@@ -66,17 +66,145 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   ];
 }
 
-// Commission sellers under Team Leader Prak Sothany
-// ONLY members who sell FOR the team leader (កៅ យ៉ារីន)
-const SOTHANY_COMMISSION_MEMBERS = [
-  'កៅ យ៉ារីន',
-  'សាន់ សូលីដា',
-];
+// Dynamic Team & Leader Resolver from Firestore metadata
+function getTeamLeaderInfo(sellerName) {
+  if (!sellerName) return null;
+  const sNorm = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
 
-function isLeaderWithCommission(sellerName) {
-  if (!sellerName) return false;
-  const s = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
-  return s.includes('សុថានី');
+  // 1. Check in cachedGroups (metadata/teams)
+  if (Array.isArray(cachedGroups)) {
+    for (const g of cachedGroups) {
+      const leadNorm = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      if (leadNorm && (sNorm === leadNorm || sNorm.includes(leadNorm) || leadNorm.includes(sNorm))) {
+        return {
+          isLeader: true,
+          leaderName: g.leaderName,
+          groupName: g.name || ('ក្រុម ' + g.leaderName),
+          group: g,
+        };
+      }
+    }
+  }
+
+  // 2. Check in cachedSellers (metadata/sellers)
+  if (Array.isArray(cachedSellers)) {
+    for (const s of cachedSellers) {
+      if (typeof s === 'object' && s) {
+        const sNameNorm = (s.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        if (sNameNorm && (sNorm === sNameNorm || sNorm.includes(sNameNorm) || sNameNorm.includes(sNorm))) {
+          if (s.role === 'team_leader' || s.role === 'big_leader') {
+            return {
+              isLeader: true,
+              leaderName: s.name,
+              groupName: s.teamGroup || ('ក្រុម ' + s.name),
+              group: null,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback for Prak Sothany if not yet in cache
+  if (sNorm.includes('សុថានី')) {
+    return {
+      isLeader: true,
+      leaderName: 'ប្រាក់ សុថានី',
+      groupName: 'ក្រុម ប្រាក់ សុថានី',
+      group: null,
+    };
+  }
+
+  return null;
+}
+
+function getMemberTeamInfo(sellerName) {
+  if (!sellerName) return null;
+  const sNorm = sellerName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+
+  // 1. Check in cachedGroups
+  if (Array.isArray(cachedGroups)) {
+    for (const g of cachedGroups) {
+      for (const m of (g.members || [])) {
+        const mName = typeof m === 'object' ? m.name : m;
+        const mNorm = (mName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        if (mNorm && (sNorm === mNorm || sNorm.includes(mNorm) || mNorm.includes(sNorm))) {
+          return {
+            isLeader: false,
+            leaderName: g.leaderName,
+            groupName: g.name,
+            sellMode: typeof m === 'object' ? m.sellMode || 'solo' : 'solo',
+          };
+        }
+      }
+    }
+  }
+
+  // 2. Check in cachedSellers
+  if (Array.isArray(cachedSellers)) {
+    for (const s of cachedSellers) {
+      if (typeof s === 'object' && s) {
+        const sNameNorm = (s.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        if (sNameNorm && (sNorm === sNameNorm || sNorm.includes(sNameNorm) || sNameNorm.includes(sNorm))) {
+          if (s.teamLeader || s.teamGroup) {
+            return {
+              isLeader: false,
+              leaderName: s.teamLeader,
+              groupName: s.teamGroup,
+              sellMode: s.sellMode || 'solo',
+            };
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function getCommissionMembersForLeader(leaderName) {
+  if (!leaderName) return [];
+  const lNorm = leaderName.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+
+  // Special config for Prak Sothany
+  if (lNorm.includes('សុថានី')) {
+    return ['កៅ យ៉ារីន', 'សាន់ សូលីដា'];
+  }
+
+  // Dynamic from cachedGroups
+  if (Array.isArray(cachedGroups)) {
+    const foundGroup = cachedGroups.find((g) => {
+      const lead = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
+    });
+
+    if (foundGroup && Array.isArray(foundGroup.members) && foundGroup.members.length > 0) {
+      const nonLeaderMembers = foundGroup.members
+        .map((m) => (typeof m === 'object' ? m : { name: m, sellMode: 'solo' }))
+        .filter((m) => {
+          const mNorm = (m.name || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+          return mNorm && mNorm !== lNorm && !lNorm.includes(mNorm);
+        });
+
+      const withLeader = nonLeaderMembers.filter((m) => m.sellMode === 'with_leader');
+      const target = withLeader.length > 0 ? withLeader : nonLeaderMembers;
+      return target.map((m) => m.name);
+    }
+  }
+
+  // Fallback: check cachedSellers
+  if (Array.isArray(cachedSellers)) {
+    const members = cachedSellers
+      .filter((s) => typeof s === 'object' && s && s.teamLeader)
+      .filter((s) => {
+        const lead = s.teamLeader.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        return lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm);
+      })
+      .map((s) => s.name);
+    if (members.length > 0) return members;
+  }
+
+  return [];
 }
 
 function formatPackageTitle(order) {
@@ -138,30 +266,34 @@ function calculateOrderCommission(orderData) {
   return isCod ? 2.5 : 3;
 }
 
-function getCommissionMemberKeyboard(orderId) {
+function getCommissionMemberKeyboard(orderId, memberList) {
   const rows = [];
-  for (let i = 0; i < SOTHANY_COMMISSION_MEMBERS.length; i += 2) {
+  const list = Array.isArray(memberList) ? memberList : [];
+
+  for (let i = 0; i < list.length; i += 2) {
     const row = [];
-    const m1 = SOTHANY_COMMISSION_MEMBERS[i];
+    const m1 = list[i];
     row.push({
-      text: `👤 ${m1}`,
-      callback_data: `comm:${orderId}:${i}`,
+      text: '👤 ' + m1,
+      callback_data: 'comm:' + orderId + ':' + i,
     });
-    if (i + 1 < SOTHANY_COMMISSION_MEMBERS.length) {
-      const m2 = SOTHANY_COMMISSION_MEMBERS[i + 1];
+    if (i + 1 < list.length) {
+      const m2 = list[i + 1];
       row.push({
-        text: `👤 ${m2}`,
-        callback_data: `comm:${orderId}:${i + 1}`,
+        text: '👤 ' + m2,
+        callback_data: 'comm:' + orderId + ':' + (i + 1),
       });
     }
     rows.push(row);
   }
+
   rows.push([
     {
       text: '👑 មេក្រុមលក់ផ្ទាល់ខ្លួន',
-      callback_data: `comm:${orderId}:self`,
+      callback_data: 'comm:' + orderId + ':self',
     },
   ]);
+
   return rows;
 }
 
@@ -408,50 +540,58 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const hasExplicitSeller = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' && parsed.sellerName.trim().length > 0;
 
         if (hasExplicitSeller) {
-          const isLeaderOrder = isLeaderWithCommission(parsed.sellerName);
+          const leaderInfo = getTeamLeaderInfo(parsed.sellerName);
+          const memberInfo = !leaderInfo ? getMemberTeamInfo(parsed.sellerName) : null;
+
           const orderNumber = await getNextOrderNumber();
           const completeOrder = buildCompleteOrder({
             parsed,
             orderNumber,
             sellerRole: 'seller',
             paymentStatus: parsed.paymentStatus || 'unpaid',
-            teamLeader: parsed.teamLeader || 'ឡា ធីតា',
+            teamLeader: leaderInfo ? leaderInfo.leaderName : (memberInfo?.leaderName || parsed.teamLeader || 'ឡា ធីតា'),
           });
           completeOrder.sellerName = parsed.sellerName.trim();
           completeOrder.actualSeller = parsed.sellerName.trim();
           completeOrder.commissionSeller = null;
           completeOrder.sellerCommission = 0;
           completeOrder.isCommissionSale = false;
-          if (isLeaderOrder) {
-            completeOrder.teamLeader = 'ប្រាក់ សុថានី';
-            completeOrder.teamGroup = 'ក្រុម ប្រាក់ សុថានី';
+
+          if (leaderInfo) {
+            completeOrder.teamLeader = leaderInfo.leaderName;
+            completeOrder.teamGroup = leaderInfo.groupName;
+          } else if (memberInfo) {
+            completeOrder.teamLeader = memberInfo.leaderName || completeOrder.teamLeader;
+            completeOrder.teamGroup = memberInfo.groupName || completeOrder.teamGroup;
+            if (memberInfo.sellMode === 'with_leader') {
+              completeOrder.saleMode = 'with_leader';
+              completeOrder.commissionSeller = parsed.sellerName.trim();
+              completeOrder.sellerCommission = calculateOrderCommission(completeOrder);
+              completeOrder.isCommissionSale = true;
+            }
           }
 
           await saveOrderToFirestore(completeOrder);
 
-          if (isLeaderOrder) {
-            const pkgTitle = formatPackageTitle(completeOrder);
+          if (leaderInfo) {
+            const commMembers = getCommissionMembersForLeader(leaderInfo.leaderName);
+            if (commMembers.length > 0) {
+              const pkgTitle = formatPackageTitle(completeOrder);
 
-            const advisorLine = completeOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${completeOrder.advisorPhone}` : '';
-            const productTypeLine = completeOrder.productType ? `\n🏷️ ប្រភេទ: ${completeOrder.productType}` : '';
+              const advisorLine = completeOrder.advisorPhone ? '\n☎️ អ្នកប្រឹក្សា: ' + completeOrder.advisorPhone : '';
+              const productTypeLine = completeOrder.productType ? '\n🏷️ ប្រភេទ: ' + completeOrder.productType : '';
 
-            const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
------------------------------------------
-📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
-📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
-🏢 ម្ចាស់ Order (មេក្រុម): ${completeOrder.sellerName}
------------------------------------------
-👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ៖`;
+              const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (មេក្រុម): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ៖';
 
-            console.log(`[WeCan Bot Commission Prompt] #${orderNumber} for leader: ${completeOrder.sellerName}`);
+              console.log('[WeCan Bot Commission Prompt] #' + orderNumber + ' for leader: ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
 
-            return bot.sendMessage(chatId, promptMsg, {
-              reply_to_message_id: msg.message_id,
-              reply_markup: {
-                inline_keyboard: getCommissionMemberKeyboard(completeOrder.id),
-              },
-            });
+              return bot.sendMessage(chatId, promptMsg, {
+                reply_to_message_id: msg.message_id,
+                reply_markup: {
+                  inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers),
+                },
+              });
+            }
           }
 
           const payBadge = completeOrder.paymentStatus === 'paid'
@@ -665,16 +805,17 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         let isCommission = false;
 
         if (targetIdx === 'self') {
-          selectedMember = orderData.sellerName || 'ប្រាក់ សុថានី';
+          selectedMember = orderData.sellerName || orderData.teamLeader || 'មេក្រុម';
           commAmount = 0;
           isCommission = false;
           await bot.answerCallbackQuery(queryMsg.id, { text: '✅ មេក្រុមលក់ផ្ទាល់ខ្លួន' });
         } else {
           const idx = parseInt(targetIdx, 10);
-          selectedMember = SOTHANY_COMMISSION_MEMBERS[idx] || 'កូនក្រុម';
+          const members = getCommissionMembersForLeader(orderData.sellerName || orderData.teamLeader);
+          selectedMember = members[idx] || 'កូនក្រុម';
           commAmount = calculateOrderCommission(orderData);
           isCommission = true;
-          await bot.answerCallbackQuery(queryMsg.id, { text: `✅ ${selectedMember} (កម្រៃ +$${commAmount})` });
+          await bot.answerCallbackQuery(queryMsg.id, { text: '✅ ' + selectedMember + ' (កម្រៃ +$' + commAmount + ')' });
         }
 
         const updatedOrder = {
