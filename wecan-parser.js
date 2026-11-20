@@ -73,6 +73,15 @@ function normalizeSellerName(name) {
   if (clean.includes('ណាក់') || clean.includes('ចំរើន')) {
     return 'ណាក់ ចំរើន';
   }
+  if (clean === 'ឡាបុប្ផា' || clean.includes('បុប្ផា')) {
+    return 'ឡា បុប្ផា';
+  }
+  if (clean === 'ឡាធីតា' || (clean.includes('ឡា') && clean.includes('ធីតា'))) {
+    return 'ឡា ធីតា';
+  }
+  if (clean === 'ប្រាក់សុថានី' || clean.includes('សុថានី')) {
+    return 'ប្រាក់ សុថានី';
+  }
   return name.replace(/[\u200B\u200C\u200D\uFE0E\uFE0F]+/g, '').replace(/\s+/g, ' ').trim();
 }
 

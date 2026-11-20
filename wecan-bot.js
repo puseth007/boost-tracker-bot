@@ -5,6 +5,7 @@ const {
   collection,
   doc,
   setDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
@@ -58,6 +59,13 @@ async function loadMetadata() {
 loadMetadata();
 
 function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
+  const cancelBtnRow = [
+    {
+      text: '❌ បោះបង់ការកុម្ម៉ង់ (Cancel)',
+      callback_data: `tgcancel:${orderId}`,
+    },
+  ];
+
   if (isInitial) {
     return [
       [
@@ -70,6 +78,7 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
           callback_data: `tgpay:${orderId}:unpaid`,
         },
       ],
+      cancelBtnRow,
     ];
   }
 
@@ -85,7 +94,50 @@ function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
         callback_data: `tgpay:${orderId}:unpaid`,
       },
     ],
+    cancelBtnRow,
   ];
+}
+
+// Canonical Seller Name Resolver (Handles spacing variations like ឡាបុប្ផា vs ឡា បុប្ផា)
+function getCanonicalSellerName(name) {
+  if (!name) return 'ទូទៅ';
+  const nNorm = name.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+
+  // 1. Check in cachedGroups leaders and members
+  if (Array.isArray(cachedGroups)) {
+    for (const g of cachedGroups) {
+      const leadNorm = (g.leaderName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      if (leadNorm && nNorm === leadNorm) return g.leaderName;
+      for (const m of (g.members || [])) {
+        const mName = typeof m === 'object' ? m.name : m;
+        const mNorm = (mName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+        if (mNorm && nNorm === mNorm) return mName;
+      }
+    }
+  }
+
+  // 2. Check in cachedSellers
+  if (Array.isArray(cachedSellers)) {
+    for (const s of cachedSellers) {
+      const sName = typeof s === 'object' ? s.name : s;
+      const sNorm = (sName || '').replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+      if (sNorm && nNorm === sNorm) return sName;
+    }
+  }
+
+  // 3. Fallback for common unspaced leader/member names
+  const knownNames = [
+    'ឡា បុប្ផា', 'ឡា ធីតា', 'ប្រាក់ សុថានី', 'ស៊ីង អ៊ី', 'វី សៅបេន',
+    'កៅ យ៉ារីន', 'សាន់ សូលីដា', 'វ៉ា កក្កដា', 'ឃីន ម៉ាលី', 'សឿន ចាន់',
+    'សឿន សារ៉ុម', 'តេង សុវណ្ណរត្ន័', 'រ៉េន ស្រីណេត', 'សយ ស្រីណេត',
+    'ផល្លី ស្រីណែត', 'ប្រាក់ សុផាន់ណា', 'ព្រុំ វុទ្ធី', 'ឃីន យុន'
+  ];
+  for (const k of knownNames) {
+    const kNorm = k.replace(/[\s\u200B\u200C\u200D\-_:.]+/g, '').toLowerCase();
+    if (kNorm === nNorm) return k;
+  }
+
+  return name.replace(/[\u200B\u200C\u200D\uFE0E\uFE0F]+/g, '').replace(/\s+/g, ' ').trim();
 }
 
 // Dynamic Team & Leader Resolver from Firestore metadata (100% Unified Architecture)
@@ -144,6 +196,7 @@ function getMemberTeamInfo(sellerName) {
           const sellMode = typeof m === 'object' ? (m.sellMode || m.mode || 'solo') : 'solo';
           return {
             isLeader: false,
+            memberName: mName,
             leaderName: g.leaderName,
             groupName: g.name,
             sellMode,
@@ -303,6 +356,13 @@ function getCommissionMemberKeyboard(orderId, memberList) {
     {
       text: '👑 មេក្រុមលក់ផ្ទាល់ខ្លួន',
       callback_data: 'comm:' + orderId + ':self',
+    },
+  ]);
+
+  rows.push([
+    {
+      text: '❌ បោះបង់ការកុម្ម៉ង់ (Cancel)',
+      callback_data: 'tgcancel:' + orderId,
     },
   ]);
 
@@ -544,21 +604,27 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             paymentStatus: parsed.paymentStatus || 'unpaid',
             teamLeader: leaderInfo ? leaderInfo.leaderName : (memberInfo?.leaderName || parsed.teamLeader || 'ឡា ធីតា'),
           });
-          completeOrder.sellerName = parsed.sellerName.trim();
-          completeOrder.actualSeller = parsed.sellerName.trim();
+          const canonicalSeller = getCanonicalSellerName(parsed.sellerName);
+          completeOrder.sellerName = canonicalSeller;
+          completeOrder.actualSeller = canonicalSeller;
           completeOrder.commissionSeller = null;
           completeOrder.sellerCommission = 0;
           completeOrder.isCommissionSale = false;
 
           if (leaderInfo) {
+            completeOrder.sellerName = leaderInfo.leaderName;
+            completeOrder.actualSeller = leaderInfo.leaderName;
             completeOrder.teamLeader = leaderInfo.leaderName;
             completeOrder.teamGroup = leaderInfo.groupName;
           } else if (memberInfo) {
+            const memberCanonical = memberInfo.memberName || canonicalSeller;
+            completeOrder.sellerName = memberCanonical;
+            completeOrder.actualSeller = memberCanonical;
             completeOrder.teamLeader = memberInfo.leaderName || completeOrder.teamLeader;
             completeOrder.teamGroup = memberInfo.groupName || completeOrder.teamGroup;
             if (memberInfo.sellMode === 'with_leader') {
               completeOrder.saleMode = 'with_leader';
-              completeOrder.commissionSeller = parsed.sellerName.trim();
+              completeOrder.commissionSeller = memberCanonical;
               completeOrder.sellerCommission = calculateOrderCommission(completeOrder);
               completeOrder.isCommissionSale = true;
             }
@@ -965,6 +1031,55 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           show_alert: true,
         }).catch(() => {});
       }
+      return;
+    }
+
+    // Cancel order handler
+    if (data.startsWith('tgcancel:')) {
+      const orderId = data.replace('tgcancel:', '');
+      try {
+        if (!db) throw new Error('Database not connected');
+        const orderRef = doc(db, 'orders', orderId);
+        const orderSnap = await getDoc(orderRef);
+        const ordNum = orderSnap.exists() ? (orderSnap.data().orderNumber || '') : '';
+
+        await deleteDoc(orderRef);
+
+        await bot.answerCallbackQuery(queryMsg.id, {
+          text: `❌ ការកុម្ម៉ង់ #${ordNum} ត្រូវបានបោះបង់ និងលុបចេញពីប្រព័ន្ធរួចរាល់!`,
+          show_alert: true,
+        });
+
+        const origText = queryMsg.message.text || '';
+        const cancelledText = `🚫 [បានបោះបង់] ការកុម្ម៉ង់នេះត្រូវបានបោះបង់ និងលុបចេញពីប្រព័ន្ធរួចរាល់! (#${ordNum})\n-----------------------------------------\n${origText.replace(/✅\s*បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ!|📦\s*ទទួលបានការកុម្ម៉ង់ថ្មី!/g, '🚫 ការកុម្ម៉ង់ត្រូវបានបោះបង់')}`;
+
+        return bot.editMessageText(cancelledText, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: '❌ បានបោះបង់រួចរាល់',
+                  callback_data: 'noop',
+                },
+              ],
+            ],
+          },
+        }).catch(() => {});
+      } catch (err) {
+        console.error('[WeCan Bot] Error cancelling order:', err);
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: `កំហុសបោះបង់: ${err.message}`,
+          show_alert: true,
+        });
+      }
+    }
+
+    if (data === 'noop') {
+      return bot.answerCallbackQuery(queryMsg.id, {
+        text: 'ការកុម្ម៉ង់នេះត្រូវបានបោះបង់រួចរាល់ហើយ!',
+      });
     }
   });
 
