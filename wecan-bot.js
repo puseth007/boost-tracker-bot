@@ -450,11 +450,30 @@ function calculateOrderCommission(orderData) {
     (orderData.deliveryMethod === 'company' && orderData.companyDeliveryType === 'cod') ||
     (orderData.deliveryMethod && String(orderData.deliveryMethod).toLowerCase().includes('cod'));
 
-  // 1. Dynamic Check from Firestore system_config if available
+  let resolvedPkgId = pkgId;
+  if (!resolvedPkgId) {
+    if (cans > 0 && tubes > 0) {
+      resolvedPkgId = `combo_${cans}_${tubes}`;
+    } else if (tubes > 0 && cans === 0) {
+      resolvedPkgId = `set_${tubes}`;
+    }
+  }
+
+  // 1. Leader-specific Team Commission check if available
+  const leaderInfo = getTeamLeaderInfo(orderData.teamLeader || orderData.sellerName);
+  const leaderComms = leaderInfo?.group?.sellerCommissions;
+  if (leaderComms) {
+    const commGroup = isCod ? leaderComms.cod : leaderComms.standard;
+    if (commGroup && resolvedPkgId && commGroup[resolvedPkgId] !== undefined) {
+      return Number(commGroup[resolvedPkgId]);
+    }
+  }
+
+  // 2. Dynamic Check from Firestore system_config if available
   if (cachedSystemConfig && cachedSystemConfig.sellerCommissions) {
     const commGroup = isCod ? cachedSystemConfig.sellerCommissions.cod : cachedSystemConfig.sellerCommissions.standard;
-    if (commGroup && pkgId && commGroup[pkgId] !== undefined) {
-      return Number(commGroup[pkgId]);
+    if (commGroup && resolvedPkgId && commGroup[resolvedPkgId] !== undefined) {
+      return Number(commGroup[resolvedPkgId]);
     }
   }
 
