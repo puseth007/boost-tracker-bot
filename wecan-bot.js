@@ -84,6 +84,28 @@ async function loadMetadata() {
 }
 loadMetadata();
 
+function getInitialPaymentKeyboard(orderId, price) {
+  const priceStr = price ? ` ($${price})` : '';
+  return [
+    [
+      {
+        text: `🟢 បានទូទាត់${priceStr}`,
+        callback_data: `final_pay:${orderId}:paid`,
+      },
+      {
+        text: `🟠 មិនទាន់ទូទាត់${priceStr}`,
+        callback_data: `final_pay:${orderId}:unpaid`,
+      },
+    ],
+    [
+      {
+        text: '❌ បោះបង់ការកុម្ម៉ង់ (Cancel)',
+        callback_data: `tgcancel:${orderId}`,
+      },
+    ],
+  ];
+}
+
 function getPaymentInlineKeyboard(orderId, currentStatus, isInitial = false) {
   const cancelBtnRow = [
     {
@@ -781,19 +803,19 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             }
           }
 
-          await saveOrderToFirestore(completeOrder);
+          // Save draft in pending_orders (DO NOT SAVE TO orders COLLECTION YET!)
+          await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
+
+          const pkgTitle = formatPackageTitle(completeOrder);
+          const advisorLine = completeOrder.advisorPhone ? '\n☎️ អ្នកប្រឹក្សា: ' + completeOrder.advisorPhone : '';
+          const productTypeLine = completeOrder.productType ? '\n🏷️ ប្រភេទ: ' + completeOrder.productType : '';
 
           if (leaderInfo) {
             const commMembers = getCommissionMembersForLeader(leaderInfo.leaderName);
             if (commMembers.length > 0) {
-              const pkgTitle = formatPackageTitle(completeOrder);
+              const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (មេក្រុម): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ (ឬមេក្រុមផ្ទាល់)៖';
 
-              const advisorLine = completeOrder.advisorPhone ? '\n☎️ អ្នកប្រឹក្សា: ' + completeOrder.advisorPhone : '';
-              const productTypeLine = completeOrder.productType ? '\n🏷️ ប្រភេទ: ' + completeOrder.productType : '';
-
-              const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (មេក្រុម): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ៖';
-
-              console.log('[WeCan Bot Commission Prompt] #' + orderNumber + ' for leader: ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
+              console.log('[WeCan Bot Step 1: Member Pick] #' + orderNumber + ' for leader: ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
 
               return bot.sendMessage(chatId, promptMsg, {
                 reply_to_message_id: msg.message_id,
@@ -804,10 +826,8 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             }
           }
 
-          const payBadge = completeOrder.paymentStatus === 'paid'
-            ? `🟢 បានទូទាត់ ($${completeOrder.price})`
-            : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
-
+          // Case 2: Member drop (or leader without subordinates)
+          // Prompt to choose payment status immediately to finalize order!
           const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
             ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
             : completeOrder.companyDeliveryType === 'jt'
@@ -816,16 +836,11 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
             : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
-          const pkgTitle = formatPackageTitle(completeOrder);
-
           const unitsDetail = completeOrder.cans > 0
             ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
             : `${completeOrder.tubes} ទីប`;
 
-          const advisorLine = completeOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${completeOrder.advisorPhone}` : '';
-          const productTypeLine = completeOrder.productType ? `\n🏷️ ប្រភេទ: ${completeOrder.productType}` : '';
-
-          const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber})
+          const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
 -----------------------------------------
 📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
 📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
@@ -834,18 +849,17 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
 🏢 ក្រុម: ${completeOrder.teamLeader}
 🧪 ចំនួនលក់: ${unitsDetail}
-💳 ស្ថានភាពទូទាត់: ${payBadge}
 💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
+👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
 
-          console.log(`[WeCan Bot Order Saved] #${orderNumber} for seller: ${completeOrder.sellerName} (${completeOrder.teamLeader})`);
+          console.log(`[WeCan Bot Step 1: Payment Prompt for Member] #${orderNumber} (${completeOrder.sellerName})`);
 
-          return bot.sendMessage(chatId, successMsg, {
+          return bot.sendMessage(chatId, promptMsg, {
             reply_to_message_id: msg.message_id,
             reply_markup: {
-              inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, completeOrder.paymentStatus, true),
+              inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
             },
           });
         } else {
@@ -944,11 +958,8 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         });
         completeOrder.sellerName = sName;
 
-        await saveOrderToFirestore(completeOrder);
-
-        const payBadge = completeOrder.paymentStatus === 'paid'
-          ? `🟢 បានទូទាត់ ($${completeOrder.price})`
-          : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
+        // Save draft in pending_orders (DO NOT SAVE TO orders COLLECTION YET!)
+        await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
 
         const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
@@ -964,7 +975,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
           : `${completeOrder.tubes} ទីប`;
 
-        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber})
+        const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! (#${orderNumber})
 -----------------------------------------
 📞 ភ្ញៀវ: ${completeOrder.customerPhone}
 📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${pending.parsed.provinceKm}
@@ -973,17 +984,16 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
 🏢 ក្រុម: ${completeOrder.teamLeader}
 🧪 ចំនួនលក់: ${unitsDetail}
-💳 ស្ថានភាពទូទាត់: ${payBadge}
 💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
-👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
+👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
 
-        await bot.editMessageText(successMsg, {
+        await bot.editMessageText(promptMsg, {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: {
-            inline_keyboard: getPaymentInlineKeyboard(completeOrder.id, completeOrder.paymentStatus, true),
+            inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
           },
         }).catch(err => {
           if (!err.message?.includes('message is not modified')) console.error('editMessageText error:', err.message);
@@ -1003,10 +1013,18 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       const targetIdx = parts[2];
 
       try {
-        const orderRef = doc(db, 'orders', orderId);
-        const orderSnap = await getDoc(orderRef);
+        let orderRef = doc(db, 'pending_orders', orderId);
+        let orderSnap = await getDoc(orderRef);
+        let isFromPending = true;
+
         if (!orderSnap.exists()) {
-          return bot.answerCallbackQuery(queryMsg.id, { text: 'រកមិនឃើញការកុម្ម៉ង់នេះទេ!', show_alert: true });
+          orderRef = doc(db, 'orders', orderId);
+          orderSnap = await getDoc(orderRef);
+          isFromPending = false;
+        }
+
+        if (!orderSnap.exists()) {
+          return bot.answerCallbackQuery(queryMsg.id, { text: 'រកមិនឃើញការកុម្ម៉ង់នេះទេ ឬផុតកំណត់!', show_alert: true });
         }
 
         const orderData = orderSnap.data();
@@ -1046,11 +1064,12 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           updatedAt: new Date().toISOString(),
         };
 
-        await saveOrderToFirestore(updatedOrder);
-
-        const payBadge = updatedOrder.paymentStatus === 'paid'
-          ? `🟢 បានទូទាត់ ($${updatedOrder.price})`
-          : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price})`;
+        if (isFromPending) {
+          // Keep in pending_orders until payment is selected!
+          await setDoc(doc(db, 'pending_orders', orderId), sanitizeForFirestore(updatedOrder), { merge: true });
+        } else {
+          await saveOrderToFirestore(updatedOrder);
+        }
 
         const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
@@ -1074,7 +1093,117 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
               ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${selectedMember} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
               : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (លក់ផ្ទាល់ខ្លួន)`);
 
-        const updatedMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
+        const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${updatedOrder.orderNumber || ''})
+-----------------------------------------
+📞 ភ្ញៀវ: ${updatedOrder.customerPhone || 'N/A'}${advisorLine}${productTypeLine}
+📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
+🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
+🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
+🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
+🧪 ចំនួនលក់: ${unitsDetail}
+💰 ចំណេញសុទ្ធ: $${updatedOrder.orderProfit ? updatedOrder.orderProfit.toFixed(2) : '0.00'}
+📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
+-----------------------------------------
+👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
+
+        await bot.editMessageText(promptMsg, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: {
+            inline_keyboard: getInitialPaymentKeyboard(orderId, updatedOrder.price),
+          },
+        }).catch(err => {
+          if (!err.message?.includes('message is not modified')) console.error('editMessageText error:', err.message);
+        });
+      } catch (e) {
+        console.error('Error handling commission pick:', e);
+        bot.answerCallbackQuery(queryMsg.id, { text: `កំហុស: ${e.message}`, show_alert: true }).catch(() => {});
+      }
+      return;
+    }
+
+    // Final payment selection to complete & save order into Firestore
+    if (data.startsWith('final_pay:')) {
+      const parts = data.split(':');
+      const orderId = parts[1];
+      const targetStatus = parts[2] || 'unpaid';
+
+      if (!db) {
+        return bot.answerCallbackQuery(queryMsg.id, {
+          text: 'Database មិនទាន់ដំណើរការ!',
+          show_alert: true,
+        });
+      }
+
+      try {
+        let orderRef = doc(db, 'pending_orders', orderId);
+        let orderSnap = await getDoc(orderRef);
+        let isFromPending = true;
+
+        if (!orderSnap.exists()) {
+          orderRef = doc(db, 'orders', orderId);
+          orderSnap = await getDoc(orderRef);
+          isFromPending = false;
+        }
+
+        if (!orderSnap.exists()) {
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ ឬផុតកំណត់!',
+            show_alert: true,
+          });
+        }
+
+        const existingOrder = orderSnap.data();
+        const updatedOrder = {
+          ...existingOrder,
+          paymentStatus: targetStatus,
+          updatedAt: new Date().toISOString(),
+        };
+
+        // 1. Save to orders collection (official recording)
+        await saveOrderToFirestore(updatedOrder);
+
+        // 2. Remove from pending_orders if present
+        if (isFromPending) {
+          await deleteDoc(doc(db, 'pending_orders', orderId)).catch(() => {});
+        }
+
+        const statusLabel = targetStatus === 'paid' ? '🟢 បានទូទាត់' : '🟠 មិនទាន់ទូទាត់';
+        await bot.answerCallbackQuery(queryMsg.id, {
+          text: `✅ បានកត់ត្រាជោគជ័យ! (${statusLabel})`,
+        });
+
+        const payBadge = targetStatus === 'paid'
+          ? `🟢 បានទូទាត់ ($${updatedOrder.price})`
+          : `🟠 មិនទាន់ទូទាត់ ($${updatedOrder.price})`;
+
+        const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
+          ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'jt'
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'cod'
+          ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+
+        const pkgTitle = formatPackageTitle(updatedOrder);
+
+        const unitsDetail = updatedOrder.cans > 0
+          ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
+          : `${updatedOrder.tubes} ទីប`;
+
+        const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
+        const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
+
+        const isStaff = isStaffMember(updatedOrder.commissionSeller || updatedOrder.actualSeller);
+        const sellerLine = updatedOrder.commissionSeller
+          ? (isStaff
+              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.commissionSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`)
+          : (isStaff && updatedOrder.actualSeller && updatedOrder.actualSeller !== updatedOrder.sellerName
+              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.actualSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}`);
+
+        const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
 📞 ភ្ញៀវ: ${updatedOrder.customerPhone || 'N/A'}${advisorLine}${productTypeLine}
 📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
@@ -1083,22 +1212,25 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
+💰 ចំណេញសុទ្ធ: $${updatedOrder.orderProfit ? updatedOrder.orderProfit.toFixed(2) : '0.00'}
 📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
 -----------------------------------------
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;
 
-        await bot.editMessageText(updatedMsg, {
+        await bot.editMessageText(updatedSuccessMsg, {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: {
-            inline_keyboard: getPaymentInlineKeyboard(orderId, updatedOrder.paymentStatus, true),
+            inline_keyboard: getPaymentInlineKeyboard(orderId, targetStatus),
           },
         }).catch(err => {
           if (!err.message?.includes('message is not modified')) console.error('editMessageText error:', err.message);
         });
       } catch (e) {
-        console.error('Error handling commission pick:', e);
-        bot.answerCallbackQuery(queryMsg.id, { text: `កំហុស: ${e.message}`, show_alert: true }).catch(() => {});
+        bot.answerCallbackQuery(queryMsg.id, {
+          text: `កំហុស: ${e.message}`,
+          show_alert: true,
+        }).catch(() => {});
       }
       return;
     }
@@ -1154,14 +1286,23 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       try {
         const orderRef = doc(db, 'orders', orderId);
         const orderSnap = await getDoc(orderRef);
-        const currentStatus = orderSnap.exists() ? (orderSnap.data().paymentStatus || 'unpaid') : 'unpaid';
-
-        await bot.answerCallbackQuery(queryMsg.id, { text: '🔙 បានត្រឡប់ក្រោយវិញ' });
-
-        return bot.editMessageReplyMarkup(
-          { inline_keyboard: getPaymentInlineKeyboard(orderId, currentStatus) },
-          { chat_id: chatId, message_id: messageId }
-        ).catch(() => {});
+        if (orderSnap.exists()) {
+          const currentStatus = orderSnap.data().paymentStatus || 'unpaid';
+          await bot.answerCallbackQuery(queryMsg.id, { text: '🔙 បានត្រឡប់ក្រោយវិញ' });
+          return bot.editMessageReplyMarkup(
+            { inline_keyboard: getPaymentInlineKeyboard(orderId, currentStatus) },
+            { chat_id: chatId, message_id: messageId }
+          ).catch(() => {});
+        } else {
+          const pSnap = await getDoc(doc(db, 'pending_orders', orderId));
+          if (pSnap.exists()) {
+            await bot.answerCallbackQuery(queryMsg.id, { text: '🔙 បានត្រឡប់ក្រោយវិញ' });
+            return bot.editMessageReplyMarkup(
+              { inline_keyboard: getInitialPaymentKeyboard(orderId, pSnap.data().price) },
+              { chat_id: chatId, message_id: messageId }
+            ).catch(() => {});
+          }
+        }
       } catch (e) {
         bot.answerCallbackQuery(queryMsg.id, { text: `កំហុស: ${e.message}`, show_alert: true }).catch(() => {});
       }
@@ -1287,9 +1428,14 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         if (!db) throw new Error('Database not connected');
         const orderRef = doc(db, 'orders', orderId);
         const orderSnap = await getDoc(orderRef);
-        const ordNum = orderSnap.exists() ? (orderSnap.data().orderNumber || '') : '';
+        let ordNum = orderSnap.exists() ? (orderSnap.data().orderNumber || '') : '';
+        if (!ordNum) {
+          const pSnap = await getDoc(doc(db, 'pending_orders', orderId));
+          if (pSnap.exists()) ordNum = pSnap.data().orderNumber || '';
+        }
 
-        await deleteDoc(orderRef);
+        await deleteDoc(orderRef).catch(() => {});
+        await deleteDoc(doc(db, 'pending_orders', orderId)).catch(() => {});
 
         await bot.answerCallbackQuery(queryMsg.id, {
           text: `❌ ការកុម្ម៉ង់ #${ordNum} ត្រូវបានបោះបង់ និងលុបចេញពីប្រព័ន្ធរួចរាល់!`,
