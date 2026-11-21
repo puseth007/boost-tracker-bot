@@ -52,7 +52,7 @@ async function loadMetadata() {
 
     const teamsSnap = await getDoc(doc(db, 'metadata', 'teams'));
     if (teamsSnap.exists()) {
-      cachedGroups = teamsSnap.data().groups || [];
+      cachedGroups = teamsSnap.data().list || teamsSnap.data().groups || [];
     }
 
     const configSnap = await getDoc(doc(db, 'metadata', 'system_config'));
@@ -69,7 +69,7 @@ async function loadMetadata() {
 
     onSnapshot(doc(db, 'metadata', 'teams'), (snap) => {
       if (snap.exists()) {
-        cachedGroups = snap.data().groups || [];
+        cachedGroups = snap.data().list || snap.data().groups || [];
       }
     }, (err) => console.error('[WeCan Bot] teams onSnapshot error:', err.message));
 
@@ -249,7 +249,7 @@ function getCanonicalSellerName(name) {
     'ឡា បុប្ផា', 'ឡា ធីតា', 'ប្រាក់ សុថានី', 'ស៊ីង អុឺ', 'វី សៅបេន',
     'កៅ យ៉ារីន', 'សាន់ សូលីដា', 'វ៉ា កក្កដា', 'ឃីន ម៉ាលី', 'សឿន ចាន់',
     'សឿន សារ៉ុម', 'តេង សុវណ្ណរត្ន័', 'រ៉េន ស្រីណេត', 'សយ ស្រីណេត',
-    'ផល្លី ស្រីណែត', 'ប្រាក់ សុផាន់ណា', 'ព្រុំ វុទ្ធី', 'ឃីន យុន',
+    'ផល្លី ស្រីណែត', 'ប្រាក់ សុផាន់ណា', 'ព្រុំ វុទ្ធី', 'ឃីន យុន', 'យឺន យុន',
     'ឡា ស្រីកា', 'ស្រី នួ', 'ពូ ពន្លក', 'ជុំ ស្រីណុច', 'ចែ ពៅ', 'អុី ឈៀង', 'បូរី', 'សៅ វ៉ាន់ណេត', 'ណាក់ ចំរើន'
   ];
   for (const k of knownNames) {
