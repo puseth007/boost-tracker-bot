@@ -179,11 +179,11 @@ function getCancelConfirmKeyboard(orderId) {
     ],
     [
       {
-        text: '🗑️ បាទ/ចាស បោះបង់ (លុបចោល)',
+        text: '🗑️ លុប',
         callback_data: `tgcancel_confirm:${orderId}`,
       },
       {
-        text: '🔙 ថយក្រោយ (កុំលុប)',
+        text: '❌ បោះបង់',
         callback_data: `tgpay_back:${orderId}`,
       },
     ],
