@@ -814,12 +814,12 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
             completeOrder.actualSeller = memberCanonical;
             completeOrder.teamLeader = memberInfo.leaderName || completeOrder.teamLeader;
             completeOrder.teamGroup = memberInfo.groupName || completeOrder.teamGroup;
-            if (memberInfo.sellMode === 'with_leader') {
-              completeOrder.saleMode = 'with_leader';
-              completeOrder.commissionSeller = memberCanonical;
-              completeOrder.sellerCommission = calculateOrderCommission(completeOrder);
-              completeOrder.isCommissionSale = true;
-            }
+            // When order is sent explicitly with member's name as seller,
+            // it is their OWN solo sale (not through the team leader).
+            completeOrder.saleMode = 'solo';
+            completeOrder.isCommissionSale = false;
+            completeOrder.commissionSeller = null;
+            completeOrder.sellerCommission = 0;
           }
 
           // Save draft in pending_orders (DO NOT SAVE TO orders COLLECTION YET!)
@@ -1080,6 +1080,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           commissionSeller: isCommission ? selectedMember : null,
           sellerCommission: commAmount,
           isCommissionSale: isCommission,
+          saleMode: isCommission ? 'with_leader' : 'solo',
           updatedAt: new Date().toISOString(),
         };
 
