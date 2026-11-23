@@ -868,7 +868,6 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
 🏢 ក្រុម: ${completeOrder.teamLeader}
 🧪 ចំនួនលក់: ${unitsDetail}
-💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
 👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
@@ -1003,7 +1002,6 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
 🏢 ក្រុម: ${completeOrder.teamLeader}
 🧪 ចំនួនលក់: ${unitsDetail}
-💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
 👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
@@ -1121,7 +1119,6 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
 🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
-💰 ចំណេញសុទ្ធ: $${updatedOrder.orderProfit ? updatedOrder.orderProfit.toFixed(2) : '0.00'}
 📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
 -----------------------------------------
 👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
@@ -1232,7 +1229,6 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
-💰 ចំណេញសុទ្ធ: $${updatedOrder.orderProfit ? updatedOrder.orderProfit.toFixed(2) : '0.00'}
 📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
 -----------------------------------------
 👉 ចុចប៊ូតុងខាងក្រោមដើម្បីប្ដូរស្ថានភាពទូទាត់ប្រាក់៖`;

@@ -1332,7 +1332,6 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
 🏢 ក្រុម: ${selectedMember.groupName || 'Team ស៊ីង អ៊ី'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
-💰 ចំណេញសុទ្ធ: $${completeOrder.orderProfit.toFixed(2)}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
 ${syncResultFooter}
