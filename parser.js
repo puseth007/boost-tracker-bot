@@ -430,9 +430,9 @@ function parseOrderText(text) {
         selectedPkg = PACKAGES[3]; // set_10 ($70)
       } else if (normPkg.includes('6') || (plusMatch && plusMatch[1] === '3' && plusMatch[2] === '3') || parsedPrice === 50) {
         selectedPkg = PACKAGES[2]; // set_6 ($50)
-      } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (plusMatch && plusMatch[1] === '2' && plusMatch[2] === '1') || normPkg.includes('3ទីប') || normPkg.includes('3 ទីប') || parsedPrice === 30) {
+      } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (plusMatch && plusMatch[1] === '2' && plusMatch[2] === '1') || normPkg.match(/\b3\s*ទីប/) || normPkg.includes('3 ទីប') || normPkg.includes('៣ ទីប') || parsedPrice === 30) {
         selectedPkg = PACKAGES[1]; // set_3 ($30)
-      } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
+      } else if (((explicitTubes === 1 || normPkg.includes('1ទីប') || normPkg.includes('1 ទីប')) && !plusMatch && !normPkg.match(/\d{2,}/)) || normPkg === '1' || normPkg === '១' || parsedPrice === 17) {
         selectedPkg = PACKAGES[0]; // set_1 ($17)
       }
     }
