@@ -374,13 +374,18 @@ function parseOrderText(text) {
     fullTextNorm.includes('ទីប') ||
     fullTextNorm.includes('គ្រីម');
 
-  // A combo package (ថ្នាំកំប៉ុង + គ្រីម) requires BOTH can/medicine AND tube/cream
-  // or explicit combo notations like "1+1", "2+2", "3+3", "5+5", "1ថែម1", etc.
-  const hasBothCanAndTube =
-    (hasCanWord && hasTubeWord) ||
-    normPkg.includes('ថ្នាំ+គ្រីម') ||
-    normPkg.includes('កំប៉ុង+ទីប') ||
-    normPkg.includes('កំប៉ុង+គ្រីម');
+  const hasBothCanAndTube = (hasCanWord && hasTubeWord);
+
+  let explicitCans = 0;
+  let explicitTubes = 0;
+
+  const canMatch = normPkg.match(/(\d+)\s*(?:កំប៉ុង|កំបុង|កំប៉ុងថ្នាំ|ថ្នាំ)/);
+  if (canMatch) explicitCans = parseInt(canMatch[1], 10);
+
+  const tubeMatch = normPkg.match(/(\d+)\s*(?:ទីប|ទីបគ្រីម|គ្រីម|ក្រីម)/);
+  if (tubeMatch) explicitTubes = parseInt(tubeMatch[1], 10);
+
+  const plusMatch = normPkg.match(/(\d+)\s*(?:\+|\+|ថែម)\s*(\d+)/);
 
   let selectedPkg = null;
 
@@ -391,25 +396,29 @@ function parseOrderText(text) {
     fullTextNorm.includes('ឈុតផ្សេង');
 
   if (!isExplicitOther) {
-    // 1. Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
-    // ONLY matched if it has BOTH cans & tubes, or explicit combo "X+X" or exact combo price
+    // 1. Standard Combo Packages (EQUAL PAIRS ONLY: 5+5, 3+3, 2+2, 1+1):
+    // Requires EQUAL number of cans and tubes, OR explicit X+X with both can & cream, OR exact standard price
     if (
-      (hasBothCanAndTube && (normPkg.includes('5+5') || normPkg.includes('5ថែម5') || (normPkg.includes('5') && normPkg.includes('+')))) ||
-      (parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190 && hasCanWord))
+      (hasBothCanAndTube && explicitCans === 5 && explicitTubes === 5) ||
+      (hasBothCanAndTube && plusMatch && plusMatch[1] === '5' && plusMatch[2] === '5') ||
+      (parsedPrice === 180 && hasCanWord)
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_5_5') || PACKAGES[7];
     } else if (
-      (hasBothCanAndTube && (normPkg.includes('3+3') || normPkg.includes('3ថែម3') || (normPkg.includes('3') && normPkg.includes('+')))) ||
-      (parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140 && hasCanWord))
+      (hasBothCanAndTube && explicitCans === 3 && explicitTubes === 3) ||
+      (hasBothCanAndTube && plusMatch && plusMatch[1] === '3' && plusMatch[2] === '3') ||
+      (parsedPrice === 135 && hasCanWord)
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_3_3') || PACKAGES[6];
     } else if (
-      (hasBothCanAndTube && (normPkg.includes('2+2') || normPkg.includes('2ថែម2') || (normPkg.includes('2') && normPkg.includes('+')))) ||
-      (parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95 && hasCanWord))
+      (hasBothCanAndTube && explicitCans === 2 && explicitTubes === 2) ||
+      (hasBothCanAndTube && plusMatch && plusMatch[1] === '2' && plusMatch[2] === '2') ||
+      (parsedPrice === 90 && hasCanWord)
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_2_2') || PACKAGES[5];
     } else if (
-      (hasBothCanAndTube && (normPkg.includes('1+1') || normPkg.includes('1ថែម1') || (normPkg.includes('1') && normPkg.includes('+')))) ||
+      (hasBothCanAndTube && explicitCans === 1 && explicitTubes === 1) ||
+      (hasBothCanAndTube && plusMatch && plusMatch[1] === '1' && plusMatch[2] === '1') ||
       (parsedPrice === 50 && hasBothCanAndTube)
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || PACKAGES[4];
@@ -417,11 +426,11 @@ function parseOrderText(text) {
     // 2. Pure Cream Packages: 5+5 ($70), 3+3 ($50), 2+1 ($30), 1 ($17)
     // ONLY matched if it does NOT have can/medicine words
     else if (!hasCanWord) {
-      if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
+      if (normPkg.includes('10') || (plusMatch && plusMatch[1] === '5' && plusMatch[2] === '5') || parsedPrice === 70) {
         selectedPkg = PACKAGES[3]; // set_10 ($70)
-      } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3') || parsedPrice === 50) {
+      } else if (normPkg.includes('6') || (plusMatch && plusMatch[1] === '3' && plusMatch[2] === '3') || parsedPrice === 50) {
         selectedPkg = PACKAGES[2]; // set_6 ($50)
-      } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (normPkg.includes('3') && !normPkg.includes('33') && !normPkg.includes('135')) || normPkg.includes('៣') || parsedPrice === 30) {
+      } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (plusMatch && plusMatch[1] === '2' && plusMatch[2] === '1') || normPkg.includes('3ទីប') || normPkg.includes('3 ទីប') || parsedPrice === 30) {
         selectedPkg = PACKAGES[1]; // set_3 ($30)
       } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
         selectedPkg = PACKAGES[0]; // set_1 ($17)
@@ -431,39 +440,38 @@ function parseOrderText(text) {
 
   // 3. Fallback to "ឈុត ផ្សេងៗ" (Custom Package)
   // Handles:
-  // - Pure can orders without cream (e.g. ៣កំប៉ុង $100, 1កំប៉ុង, 2កំប៉ុង)
+  // - Unequal cans + cream (e.g. ៣កំប៉ុង+១គ្រីម $113, ២កំប៉ុង+១គ្រីម)
+  // - Pure can orders without cream (e.g. ៣កំប៉ុង $100, 1កំប៉ុង)
   // - Custom cream tube counts (e.g. 4 ទីប, 8 ទីប)
   // - Any non-standard packages
   if (!selectedPkg) {
-    let customCans = 0;
-    let customTubes = 0;
+    let finalCans = explicitCans;
+    let finalTubes = explicitTubes;
 
-    const canMatch = normPkg.match(/(\d+)\s*(?:កំប៉ុង|កំបុង|កំប៉ុងថ្នាំ|ថ្នាំ)/);
-    const tubeMatch = normPkg.match(/(\d+)\s*(?:ទីប|ទីបគ្រីម|គ្រីម|ក្រីម)/);
-
-    if (canMatch) {
-      customCans = parseInt(canMatch[1], 10);
-    }
-    if (tubeMatch) {
-      customTubes = parseInt(tubeMatch[1], 10);
-    }
-
-    if (customCans === 0 && customTubes === 0) {
-      const numMatch = normPkg.match(/(\d+)/);
-      if (numMatch) {
-        const num = parseInt(numMatch[1], 10);
-        if (hasCanWord) {
-          customCans = num;
+    if (finalCans === 0 && finalTubes === 0) {
+      if (plusMatch) {
+        if (hasBothCanAndTube) {
+          finalCans = parseInt(plusMatch[1], 10);
+          finalTubes = parseInt(plusMatch[2], 10);
+        } else if (hasCanWord) {
+          finalCans = parseInt(plusMatch[1], 10) + parseInt(plusMatch[2], 10);
         } else {
-          customTubes = num;
+          finalTubes = parseInt(plusMatch[1], 10) + parseInt(plusMatch[2], 10);
+        }
+      } else {
+        const numMatch = normPkg.match(/(\d+)/);
+        if (numMatch) {
+          const num = parseInt(numMatch[1], 10);
+          if (hasCanWord) finalCans = num;
+          else finalTubes = num;
         }
       }
     }
 
     selectedPkg = {
       id: 'set_other',
-      tubes: customTubes,
-      cans: customCans,
+      tubes: finalTubes,
+      cans: finalCans,
       nameKm: 'ឈុត ផ្សេងៗ',
       price: parsedPrice || 0,
     };
