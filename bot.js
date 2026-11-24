@@ -15,7 +15,17 @@ const {
 } = require('firebase/firestore');
 const http = require('http');
 const https = require('https');
-const { parseOrderText, buildCompleteOrder, getKhmerToday, isSingEuLeader } = require('./parser');
+const parser = require('./parser');
+const parseOrderText = parser.parseOrderText;
+const buildCompleteOrder = parser.buildCompleteOrder;
+const getKhmerToday = parser.getKhmerToday;
+const isSingEuLeader = (typeof parser.isSingEuLeader === 'function')
+  ? parser.isSingEuLeader
+  : function(name = '') {
+      if (!name) return false;
+      const clean = String(name).replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
+      return clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង') || clean.includes('sing');
+    };
 
 // ----------------------------------------------------
 // Database 1: Order Management (seth-3aa05)

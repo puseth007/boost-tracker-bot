@@ -640,4 +640,5 @@ module.exports = {
   getKhmerToday,
   normalizeSellerName,
   detectTeamLeader,
+  isSingEuLeader,
 };
