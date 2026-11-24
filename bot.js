@@ -669,7 +669,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
   console.log(`🤖 [${shopName}] Telegram Bot is RUNNING! Target collection: ${ordersCol}`);
 
   bot.on('polling_error', (err) => {
-    console.log(`[${shopName} Polling notice]:`, err.code || err.message);
+    console.log(`[${shopName} Polling notice]:`, err.message);
   });
 
   bot.on('error', (err) => {
@@ -855,6 +855,298 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
   });
 
   const pendingOrders = new Map();
+  const pendingDateConfirmOrders = new Map();
+
+  function formatKhmerDisplayDate(isoDate) {
+    if (!isoDate) return '';
+    const parts = isoDate.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    return isoDate;
+  }
+
+  async function processVerifiedOrderSingEu(parsed, chatId, replyToMsgId, editMessageId = null) {
+    // Load hierarchies
+    await loadTeamUnitsGroups();
+    await loadSellersFromDb();
+
+    // Independent Check for existence in Database 1 and Database 2
+    const dupDb1 = await checkExistsInDb1({
+      customerPhone: parsed.customerPhone,
+      destination: parsed.destination,
+      provinceId: parsed.provinceId,
+      date: parsed.date,
+    });
+
+    const dupDb2 = await checkExistsInDb2({
+      customerPhone: parsed.customerPhone,
+      date: parsed.date,
+    });
+
+    // Detect if message belongs to Team Sing Eu
+    const isSingEu = parsed.isSingEuTeam ||
+      isSingEuLeader(parsed.sellerName) ||
+      isSingEuLeader(parsed.sellerRaw) ||
+      isSingEuMemberOrTeam(parsed.sellerName, parsed.teamLeader);
+
+    // ====================================================
+    // CASE 1: OTHER TEAMS DETECTED (AUTO-RECORD)
+    // e.g. ឡា បុប្ផា, ហ៊ុន ចាន់ធី, Bopha... (NOT Team Sing Eu)
+    // ⚠️ RULE: RECORD ONLY INTO DATABASE 2 (team-units-db)!
+    // DO NOT WRITE INTO DATABASE 1!
+    // ====================================================
+    if (!isSingEu && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
+      if (dupDb2) {
+        const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយក្នុង App ទី ២ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${dupDb2.customerPhone}
+📍 ទីតាំង: ${dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dupDb2.date}
+👨‍💼 អ្នកលក់: ${dupDb2.sellerName || 'N/A'}
+🛍️ ឈុត: ${dupDb2.tubes || parsed.pkg.tubes} ទីប
+-----------------------------------------
+👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+
+        if (editMessageId) {
+          try {
+            await bot.editMessageText(dupMsg, {
+              chat_id: chatId,
+              message_id: editMessageId,
+            });
+            return;
+          } catch (e) {}
+        }
+
+        return bot.sendMessage(chatId, dupMsg, {
+          reply_to_message_id: replyToMsgId,
+        });
+      }
+
+      const resolved = await resolveTeamMember(parsed.sellerName, parsed.teamLeader || parsed.teamLeaderRaw);
+      const orderNumber = await getNextOrderNumber(true);
+      const completeOrder = buildCompleteOrder({
+        parsed,
+        orderNumber,
+        sellerRole: resolved.role === 'មេក្រុម' ? 'seller' : 'seller',
+        paymentStatus: parsed.paymentStatus || 'unpaid',
+        teamLeader: resolved.groupName,
+      });
+      completeOrder.sellerName = resolved.sellerName;
+      completeOrder.teamLeader = resolved.groupName;
+
+      // 🌟 ONLY SAVE TO DATABASE 2 (team-units-db) as instructed by user!
+      await syncToTeamUnitsDb({
+        completeOrder,
+        resolvedMember: resolved,
+        tubes: completeOrder.tubes,
+        cans: completeOrder.cans,
+      });
+
+      const payBadge = completeOrder.paymentStatus === 'paid'
+        ? `🟢 បានទូទាត់ ($${completeOrder.price})`
+        : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
+
+      const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
+        ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+        : completeOrder.companyDeliveryType === 'jt'
+        ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
+        : completeOrder.companyDeliveryType === 'cod'
+        ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
+        : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
+
+      const pkgTitle = completeOrder.packageId === 'combo_1_1'
+        ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
+        : `ឈុត ${completeOrder.tubes} ទីប`;
+
+      const unitsDetail = completeOrder.cans > 0
+        ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
+        : `${completeOrder.tubes} ទីប`;
+
+      const unassignedNotice = resolved.isUnassigned
+        ? `\n💡 ចំណាំ: ឈ្មោះ «${completeOrder.sellerName}» មិនទាន់មានក្រុមក្នុងប្រព័ន្ធទេ! Bot បានដាក់ចូលក្នុង «មិនទាន់មានក្រុម» ជាបណ្ដោះអាសន្ន។ លោកអ្នកអាចចូលទៅផ្ទេរគាត់ចូលក្រុមត្រឹមត្រូវក្នុង App ទី ២ បានគ្រប់ពេល!`
+        : '';
+
+      const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [App ទី ២: Team Units Tracker]
+-----------------------------------------
+📞 ភ្ញៀវ: ${completeOrder.customerPhone}
+📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
+🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
+🚚 សេវាដឹក: ${deliveryTypeBadge}
+👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${resolved.role}]
+🏢 ក្រុម: ${resolved.groupName}
+🧪 ចំនួនលក់: ${unitsDetail}
+📅 កាលបរិច្ឆេទ: ${completeOrder.date}
+-----------------------------------------
+📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!${unassignedNotice}
+👉 សូមផ្ទៀងផ្ទាត់ការកុម្ម៉ង់ខាងក្រោម៖`;
+
+      console.log(`[Database 2 Only Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
+
+      if (editMessageId) {
+        try {
+          await bot.editMessageText(successMsg, {
+            chat_id: chatId,
+            message_id: editMessageId,
+            reply_markup: {
+              inline_keyboard: getApp2ConfirmInlineKeyboard(completeOrder.id),
+            },
+          });
+          return;
+        } catch (e) {}
+      }
+
+      return bot.sendMessage(chatId, successMsg, {
+        reply_to_message_id: replyToMsgId,
+        reply_markup: {
+          inline_keyboard: getApp2ConfirmInlineKeyboard(completeOrder.id),
+        },
+      });
+    }
+
+    // ====================================================
+    // CASE 2: TEAM SING EU (OR UNKNOWN SELLER)
+    // ====================================================
+    if (dupDb1 && dupDb2) {
+      const dupMsg = `⚠️ ការកុម្ម៉ង់នេះមានរួចរាល់ទាំងក្នុង App 1 និង App 2 ហើយ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${dupDb1.customerPhone || dupDb2.customerPhone}
+📍 ទីតាំង: ${dupDb1.destination || dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dupDb1.date || dupDb2.date}
+👨‍💼 អ្នកលក់: ${dupDb1.sellerName || dupDb2.sellerName || 'N/A'}
+🛍️ ឈុត: ${dupDb1.tubes || dupDb2.tubes || parsed.pkg.tubes} ទីប
+-----------------------------------------
+👉 ទាំង App 1 និង App 2 សុទ្ធតែមានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+
+      if (editMessageId) {
+        try {
+          await bot.editMessageText(dupMsg, {
+            chat_id: chatId,
+            message_id: editMessageId,
+          });
+          return;
+        } catch (e) {}
+      }
+
+      return bot.sendMessage(chatId, dupMsg, {
+        reply_to_message_id: replyToMsgId,
+      });
+    }
+
+    const singEuGroup = cachedTeamGroups.find((g) => g.id === 'group_sing_e') || {
+      id: 'group_sing_e',
+      name: 'Team ស៊ីង អ៊ី',
+      leaderName: 'ស៊ីង អ៊ី',
+      leaderRole: 'មេក្រុម',
+      members: [
+        { name: 'ស្រី កា', role: 'កូនក្រុម' },
+        { name: 'ពូ ពន្លក', role: 'កូនក្រុម' },
+        { name: 'ស្រី នួ', role: 'កូនក្រុម' },
+        { name: 'ចៃ ញ៉ាញ់', role: 'កូនក្រុម' },
+      ],
+    };
+
+    const teamSingEuMembers = [
+      { name: singEuGroup.leaderName || 'ស៊ីង អ៊ី', role: 'មេក្រុម', groupId: singEuGroup.id, groupName: singEuGroup.name },
+      ...(singEuGroup.members || []).map((m) => ({
+        name: m.name,
+        role: m.role || 'កូនក្រុម',
+        groupId: singEuGroup.id,
+        groupName: singEuGroup.name,
+      })),
+    ];
+
+    for (const app1Seller of cachedSellers) {
+      if (!app1Seller || !app1Seller.name || app1Seller.name === 'ទូទៅ' || app1Seller.name.includes('ស៊ីង') || app1Seller.name.includes('សុីង')) continue;
+      const cleanName = app1Seller.name.trim();
+      const alreadyIn = teamSingEuMembers.some(
+        (m) => normalizeKhmer(m.name) === normalizeKhmer(cleanName)
+      );
+      if (!alreadyIn) {
+        teamSingEuMembers.push({
+          name: cleanName,
+          role: app1Seller.role === 'staff' ? 'បុគ្គលិក' : 'កូនក្រុម',
+          groupId: singEuGroup.id,
+          groupName: singEuGroup.name,
+        });
+      }
+    }
+
+    const pendingId = `p${Date.now().toString(36)}`;
+    pendingOrders.set(pendingId, {
+      parsed,
+      sellers: teamSingEuMembers,
+      chatId,
+      originalMsgId: replyToMsgId,
+      createdAt: Date.now(),
+      alreadyInDb1: !!dupDb1,
+      alreadyInDb2: !!dupDb2,
+    });
+
+    setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
+
+    const keyboardRows = [];
+    let currentRow = [];
+
+    teamSingEuMembers.forEach((seller, idx) => {
+      const badge = seller.role === 'មេក្រុម' ? '👑' : seller.role === 'បុគ្គលិក' ? '💼' : '👤';
+      currentRow.push({
+        text: `${badge} ${seller.name}`,
+        callback_data: `pick_${pendingId}_${idx}`,
+      });
+
+      if (currentRow.length === 2) {
+        keyboardRows.push(currentRow);
+        currentRow = [];
+      }
+    });
+
+    if (currentRow.length > 0) keyboardRows.push(currentRow);
+    keyboardRows.push([{ text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` }]);
+
+    const deliveryTypeBadge = parsed.deliveryMethod === 'moto'
+      ? `ម៉ូតូ ($${parsed.deliveryFee})`
+      : parsed.companyDeliveryType === 'jt'
+      ? `ក្រុមហ៊ុន J&T ($${parsed.deliveryFee})`
+      : parsed.companyDeliveryType === 'cod'
+      ? `ក្រុមហ៊ុន COD ($${parsed.deliveryFee})`
+      : `ក្រុមហ៊ុន ធម្មតា ($${parsed.deliveryFee})`;
+
+    let syncNotice = '';
+    if (dupDb1 && !dupDb2) {
+      syncNotice = '\n🔄 ស្ថានភាព: មានក្នុង App 1 រួចហើយ (កំពុងត្រៀមបញ្ចូល App ទី ២)';
+    } else if (!dupDb1 && dupDb2) {
+      syncNotice = '\n🔄 ស្ថានភាព: មានក្នុង App 2 រួចហើយ (កំពុងត្រៀមបញ្ចូល App ទី ១)';
+    }
+
+    const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! [Team ស៊ីង អ៊ី]${syncNotice}
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${parsed.customerPhone}
+📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
+🛍️ ឈុតទំនិញ: ${parsed.pkg.nameKm} ($${parsed.pkg.price})
+🚚 សេវាដឹក: ${deliveryTypeBadge}
+📅 កាលបរិច្ឆេទ: ${parsed.date}
+-----------------------------------------
+👉 សម្រាប់ Team ស៊ីង អ៊ី សូមជ្រើសរើសឈ្មោះ «អ្នកលក់» ពិតប្រាកដខាងក្រោម៖`;
+
+    if (editMessageId) {
+      try {
+        await bot.editMessageText(promptMsg, {
+          chat_id: chatId,
+          message_id: editMessageId,
+          reply_markup: { inline_keyboard: keyboardRows },
+        });
+        return;
+      } catch (e) {}
+    }
+
+    bot.sendMessage(chatId, promptMsg, {
+      reply_to_message_id: replyToMsgId,
+      reply_markup: {
+        inline_keyboard: keyboardRows,
+      },
+    });
+  }
 
   // MESSAGE HANDLER
   bot.on('message', async (msg) => {
@@ -956,255 +1248,45 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
         );
       }
 
-      // Load hierarchies
-      await loadTeamUnitsGroups();
-      await loadSellersFromDb();
-
-      // Independent Check for existence in Database 1 and Database 2
-      const dupDb1 = await checkExistsInDb1({
-        customerPhone: parsed.customerPhone,
-        destination: parsed.destination,
-        provinceId: parsed.provinceId,
-        date: parsed.date,
-      });
-
-      const dupDb2 = await checkExistsInDb2({
-        customerPhone: parsed.customerPhone,
-        date: parsed.date,
-      });
-
-      // Detect if message belongs to Team Sing Eu
-      const isSingEu = parsed.isSingEuTeam ||
-        isSingEuLeader(parsed.sellerName) ||
-        isSingEuLeader(parsed.sellerRaw) ||
-        isSingEuMemberOrTeam(parsed.sellerName, parsed.teamLeader);
-
-      // ====================================================
-      // CASE 1: OTHER TEAMS DETECTED (AUTO-RECORD)
-      // e.g. ឡា បុប្ផា, ហ៊ុន ចាន់ធី, Bopha... (NOT Team Sing Eu)
-      // ⚠️ RULE: RECORD ONLY INTO DATABASE 2 (team-units-db)!
-      // DO NOT WRITE INTO DATABASE 1!
-      // ====================================================
-      if (!isSingEu && parsed.sellerName && parsed.sellerName !== 'ទូទៅ') {
-        if (dupDb2) {
-          const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយក្នុង App ទី ២ (ទិន្នន័យស្ទួន)!
------------------------------------------
-📞 លេខភ្ញៀវ: ${dupDb2.customerPhone}
-📍 ទីតាំង: ${dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
-📅 កាលបរិច្ឆេទ: ${dupDb2.date}
-👨‍💼 អ្នកលក់: ${dupDb2.sellerName || 'N/A'}
-🛍️ ឈុត: ${dupDb2.tubes || parsed.pkg.tubes} ទីប
------------------------------------------
-👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
-
-          return bot.sendMessage(chatId, dupMsg, {
-            reply_to_message_id: msg.message_id,
-          });
-        }
-
-        const resolved = await resolveTeamMember(parsed.sellerName, parsed.teamLeader || parsed.teamLeaderRaw);
-        const orderNumber = await getNextOrderNumber(true);
-        const completeOrder = buildCompleteOrder({
+      const today = getKhmerToday();
+      if (parsed.date && parsed.date !== today) {
+        const pendingDateId = `dt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+        pendingDateConfirmOrders.set(pendingDateId, {
           parsed,
-          orderNumber,
-          sellerRole: resolved.role === 'មេក្រុម' ? 'seller' : 'seller',
-          paymentStatus: parsed.paymentStatus || 'unpaid',
-          teamLeader: resolved.groupName,
+          chatId,
+          replyToMsgId: msg.message_id,
+          createdAt: Date.now(),
         });
-        completeOrder.sellerName = resolved.sellerName;
-        completeOrder.teamLeader = resolved.groupName;
+        setTimeout(() => pendingDateConfirmOrders.delete(pendingDateId), 30 * 60 * 1000);
 
-        // 🌟 ONLY SAVE TO DATABASE 2 (team-units-db) as instructed by user!
-        await syncToTeamUnitsDb({
-          completeOrder,
-          resolvedMember: resolved,
-          tubes: completeOrder.tubes,
-          cans: completeOrder.cans,
-        });
+        const orderDateDisplay = formatKhmerDisplayDate(parsed.date);
+        const todayDisplay = formatKhmerDisplayDate(today);
 
-        const payBadge = completeOrder.paymentStatus === 'paid'
-          ? `🟢 បានទូទាត់ ($${completeOrder.price})`
-          : `🟠 មិនទាន់ទូទាត់ ($${completeOrder.price})`;
-
-        const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
-          ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
-          : completeOrder.companyDeliveryType === 'jt'
-          ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
-          : completeOrder.companyDeliveryType === 'cod'
-          ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
-          : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
-
-        const pkgTitle = completeOrder.packageId === 'combo_1_1'
-          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${completeOrder.tubes} ទីប`;
-
-        const unitsDetail = completeOrder.cans > 0
-          ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-          : `${completeOrder.tubes} ទីប`;
-
-        const unassignedNotice = resolved.isUnassigned
-          ? `\n💡 ចំណាំ: ឈ្មោះ «${completeOrder.sellerName}» មិនទាន់មានក្រុមក្នុងប្រព័ន្ធទេ! Bot បានដាក់ចូលក្នុង «មិនទាន់មានក្រុម» ជាបណ្ដោះអាសន្ន។ លោកអ្នកអាចចូលទៅផ្ទេរគាត់ចូលក្រុមត្រឹមត្រូវក្នុង App ទី ២ បានគ្រប់ពេល!`
-          : '';
-
-        const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [App ទី ២: Team Units Tracker]
+        const confirmPrompt = `⚠️ ការបញ្ជាក់កាលបរិច្ឆេទកុម្ម៉ង់!
 -----------------------------------------
-📞 ភ្ញៀវ: ${completeOrder.customerPhone}
-📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
-🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${completeOrder.sellerName} [${resolved.role}]
-🏢 ក្រុម: ${resolved.groupName}
-🧪 ចំនួនលក់: ${unitsDetail}
-📅 កាលបរិច្ឆេទ: ${completeOrder.date}
+📞 ភ្ញៀវ: ${parsed.customerPhone}
+📍 ទីតាំង: ${parsed.destination || 'N/A'}, ខេត្ត${parsed.provinceKm || ''}
+🛍️ ឈុត: ${parsed.pkg?.nameKm || ''} ($${parsed.pkg?.price || 0})
+👨‍💼 អ្នកលក់: ${parsed.sellerName || 'N/A'}
+📅 កាលបរិច្ឆេទលើ Order: ${orderDateDisplay}
+⏰ ថ្ងៃនេះជាក់ស្ដែង: ${todayDisplay}
 -----------------------------------------
-📲 ទិន្នន័យបានចូលទៅក្នុង App ទី ២ (Database 2) ត្រង់ «តារាងប្រចាំខែ» រួចរាល់!${unassignedNotice}
-👉 សូមផ្ទៀងផ្ទាត់ការកុម្ម៉ង់ខាងក្រោម៖`;
+❓ តើអ្នកប្រាកដទេថានេះជាការកុម្ម៉ង់ថ្ងៃ ${orderDateDisplay}?`;
 
-        console.log(`[Database 2 Only Saved] #${orderNumber} for ${completeOrder.sellerName} (${resolved.groupName})`);
-
-        return bot.sendMessage(chatId, successMsg, {
+        return bot.sendMessage(chatId, confirmPrompt, {
           reply_to_message_id: msg.message_id,
           reply_markup: {
-            inline_keyboard: getApp2ConfirmInlineKeyboard(completeOrder.id),
+            inline_keyboard: [
+              [
+                { text: '❌ បោះបង់', callback_data: `date_cancel:${pendingDateId}` },
+                { text: '✅ យល់ព្រម', callback_data: `date_confirm:${pendingDateId}` },
+              ],
+            ],
           },
         });
       }
 
-      // ====================================================
-      // CASE 2: TEAM SING EU (OR UNKNOWN SELLER)
-      // Must prompt buttons with team members so user picks!
-      // SMART SYNC RULE:
-      // If BOTH App 1 and App 2 have it -> reject as duplicate!
-      // If App 1 does NOT have it (even if App 2 has it) -> ACCEPT and save to App 1!
-      // If App 2 does NOT have it (even if App 1 has it) -> ACCEPT and save to App 2!
-      // ====================================================
-      if (dupDb1 && dupDb2) {
-        const dupMsg = `⚠️ ការកុម្ម៉ង់នេះមានរួចរាល់ទាំងក្នុង App 1 និង App 2 ហើយ (ទិន្នន័យស្ទួន)!
------------------------------------------
-📞 លេខភ្ញៀវ: ${dupDb1.customerPhone || dupDb2.customerPhone}
-📍 ទីតាំង: ${dupDb1.destination || dupDb2.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
-📅 កាលបរិច្ឆេទ: ${dupDb1.date || dupDb2.date}
-👨‍💼 អ្នកលក់: ${dupDb1.sellerName || dupDb2.sellerName || 'N/A'}
-🛍️ ឈុត: ${dupDb1.tubes || dupDb2.tubes || parsed.pkg.tubes} ទីប
------------------------------------------
-👉 ទាំង App 1 និង App 2 សុទ្ធតែមានទិន្នន័យនេះរួចហើយ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
-
-        return bot.sendMessage(chatId, dupMsg, {
-          reply_to_message_id: msg.message_id,
-        });
-      }
-
-      const singEuGroup = cachedTeamGroups.find((g) => g.id === 'group_sing_e') || {
-        id: 'group_sing_e',
-        name: 'Team ស៊ីង អ៊ី',
-        leaderName: 'ស៊ីង អ៊ី',
-        leaderRole: 'មេក្រុម',
-        members: [
-          { name: 'ស្រី កា', role: 'កូនក្រុម' },
-          { name: 'ពូ ពន្លក', role: 'កូនក្រុម' },
-          { name: 'ស្រី នួ', role: 'កូនក្រុម' },
-          { name: 'ចៃ ញ៉ាញ់', role: 'កូនក្រុម' },
-        ],
-      };
-
-      // Construct seller options
-      const teamSingEuMembers = [
-        { name: singEuGroup.leaderName || 'ស៊ីង អ៊ី', role: 'មេក្រុម', groupId: singEuGroup.id, groupName: singEuGroup.name },
-        ...(singEuGroup.members || []).map((m) => ({
-          name: m.name,
-          role: m.role || 'កូនក្រុម',
-          groupId: singEuGroup.id,
-          groupName: singEuGroup.name,
-        })),
-      ];
-
-      // Auto-merge any sellers added in App 1 (seth-3aa05 metadata/sellers)
-      for (const app1Seller of cachedSellers) {
-        if (!app1Seller || !app1Seller.name || app1Seller.name === 'ទូទៅ' || app1Seller.name.includes('ស៊ីង') || app1Seller.name.includes('សុីង')) continue;
-        const cleanName = app1Seller.name.trim();
-        const alreadyIn = teamSingEuMembers.some(
-          (m) => normalizeKhmer(m.name) === normalizeKhmer(cleanName)
-        );
-        if (!alreadyIn) {
-          teamSingEuMembers.push({
-            name: cleanName,
-            role: app1Seller.role === 'staff' ? 'បុគ្គលិក' : 'កូនក្រុម',
-            groupId: singEuGroup.id,
-            groupName: singEuGroup.name,
-          });
-        }
-      }
-
-      const pendingId = `p${Date.now().toString(36)}`;
-      pendingOrders.set(pendingId, {
-        parsed,
-        sellers: teamSingEuMembers,
-        chatId,
-        originalMsgId: msg.message_id,
-        createdAt: Date.now(),
-        alreadyInDb1: !!dupDb1,
-        alreadyInDb2: !!dupDb2,
-      });
-
-      setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
-
-      // Build inline buttons for Team Sing Eu
-      const keyboardRows = [];
-      let currentRow = [];
-
-      teamSingEuMembers.forEach((m, idx) => {
-        const icon = m.role === 'មេក្រុម' ? '👑' : '💼';
-        const roleLabel = m.role === 'មេក្រុម' ? '(មេក្រុម)' : '';
-        currentRow.push({
-          text: `${icon} ${m.name} ${roleLabel}`.trim(),
-          callback_data: `pick_${pendingId}_${idx}`,
-        });
-
-        if (currentRow.length === 2) {
-          keyboardRows.push(currentRow);
-          currentRow = [];
-        }
-      });
-
-      if (currentRow.length > 0) {
-        keyboardRows.push(currentRow);
-      }
-
-      keyboardRows.push([
-        { text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` },
-      ]);
-
-      const deliveryTypeBadge = parsed.deliveryMethod === 'moto'
-        ? `ម៉ូតូ ($${parsed.deliveryFee})`
-        : parsed.companyDeliveryType === 'jt'
-        ? `ក្រុមហ៊ុន J&T ($${parsed.deliveryFee})`
-        : parsed.companyDeliveryType === 'cod'
-        ? `ក្រុមហ៊ុន COD ($${parsed.deliveryFee})`
-        : `ក្រុមហ៊ុន ធម្មតា ($${parsed.deliveryFee})`;
-
-      let syncNotice = '';
-      if (dupDb2 && !dupDb1) {
-        syncNotice = '\n💡 (ចំណាំ: ក្នុង App 2 មានទិន្នន័យនេះរួចហើយ Bot នឹងបញ្ចូលតែទៅក្នុង App 1 ប៉ុណ្ណោះ)';
-      } else if (dupDb1 && !dupDb2) {
-        syncNotice = '\n💡 (ចំណាំ: ក្នុង App 1 មានទិន្នន័យនេះរួចហើយ Bot នឹងបញ្ចូលតែទៅក្នុង App 2 ប៉ុណ្ណោះ)';
-      }
-
-      const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! [Team ស៊ីង អ៊ី]${syncNotice}
------------------------------------------
-📞 លេខភ្ញៀវ: ${parsed.customerPhone}
-📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុតទំនិញ: ${parsed.pkg.nameKm} ($${parsed.pkg.price})
-🚚 សេវាដឹក: ${deliveryTypeBadge}
-📅 កាលបរិច្ឆេទ: ${parsed.date}
------------------------------------------
-👉 សម្រាប់ Team ស៊ីង អ៊ី សូមជ្រើសរើសឈ្មោះ «អ្នកលក់» ពិតប្រាកដខាងក្រោម៖`;
-
-      bot.sendMessage(chatId, promptMsg, {
-        reply_to_message_id: msg.message_id,
-        reply_markup: {
-          inline_keyboard: keyboardRows,
-        },
-      });
+      await processVerifiedOrderSingEu(parsed, chatId, msg.message_id);
     } catch (err) {
       console.error(`[${shopName}] Error processing order message:`, err);
       bot.sendMessage(
@@ -1222,6 +1304,34 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
 
     const chatId = queryMsg.message.chat.id;
     const messageId = queryMsg.message.message_id;
+
+    if (data.startsWith('date_cancel:')) {
+      const pendingDateId = data.replace('date_cancel:', '');
+      const pending = pendingDateConfirmOrders.get(pendingDateId);
+      pendingDateConfirmOrders.delete(pendingDateId);
+      bot.answerCallbackQuery(queryMsg.id, { text: 'បានបោះបង់ការកត់ត្រា' }).catch(() => {});
+      const dateText = pending ? formatKhmerDisplayDate(pending.parsed.date) : '';
+      return bot.editMessageText(`❌ បានបោះបង់ការកត់ត្រាការកុម្ម៉ង់${dateText ? ` ថ្ងៃ ${dateText}` : ''}។`, {
+        chat_id: chatId,
+        message_id: messageId,
+      }).catch(() => {});
+    }
+
+    if (data.startsWith('date_confirm:')) {
+      const pendingDateId = data.replace('date_confirm:', '');
+      const pending = pendingDateConfirmOrders.get(pendingDateId);
+      if (!pending) {
+        bot.answerCallbackQuery(queryMsg.id, { text: 'សំណើនេះបានផុតកំណត់ហើយ' }).catch(() => {});
+        return bot.editMessageText('⚠️ សំណើផ្ទៀងផ្ទាត់កាលបរិច្ឆេទនេះបានផុតកំណត់ហើយ។ សូមទម្លាក់សារកុម្ម៉ង់ម្ដងទៀត។', {
+          chat_id: chatId,
+          message_id: messageId,
+        }).catch(() => {});
+      }
+      pendingDateConfirmOrders.delete(pendingDateId);
+      bot.answerCallbackQuery(queryMsg.id, { text: 'បានយល់ព្រម! កំពុងដំណើរការ...' }).catch(() => {});
+      await processVerifiedOrderSingEu(pending.parsed, pending.chatId, pending.replyToMsgId, messageId);
+      return;
+    }
 
     if (data.startsWith('cancel_')) {
       const pendingId = data.replace('cancel_', '');
@@ -1506,7 +1616,7 @@ ${syncResultFooter}
 // ----------------------------------------------------
 // Start Shop 1 Bot (@puseth_sales_bot)
 // ----------------------------------------------------
-const tokenShop1 = process.env.TELEGRAM_BOT_TOKEN || '8978704090:AAGIPW0Dv8p2jzNE4Pld-Eyaeo4OOKJDZ_w';
+const tokenShop1 = process.env.TELEGRAM_BOT_TOKEN_SHOP1 || '8978704090:AAGIPW0Dv8p2jzNE4Pld-Eyaeo4OOKJDZ_w';
 startBotInstance({
   shopName: 'Shop 1 (@puseth_sales_bot)',
   token: tokenShop1,
@@ -1516,9 +1626,13 @@ startBotInstance({
 });
 
 // ----------------------------------------------------
-// Start Shop 2 Bot (@puseth_shop2_bot) -> 100% SEPARATE FILE & ISOLATED DATABASE!
+// Start Shop 2 Bot (@puseth_shop2_bot) -> Optional file
 // ----------------------------------------------------
-require('./bot-shop2');
+try {
+  require('./bot-shop2');
+} catch (e) {
+  // bot-shop2 is optional
+}
 
 // ----------------------------------------------------
 // Start Team WeCan Bot (@team_wecan_bot) if available

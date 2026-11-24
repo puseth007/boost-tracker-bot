@@ -12,7 +12,7 @@ const {
   where,
   onSnapshot,
 } = require('firebase/firestore');
-const { parseOrderText, buildCompleteOrder } = require('./wecan-parser');
+const { parseOrderText, buildCompleteOrder, getKhmerToday } = require('./parser');
 
 // ----------------------------------------------------
 // Firebase Configuration (boost-tracker-v2)
@@ -642,10 +642,20 @@ function startWeCanBot() {
   console.log('🤖 [WeCan Bot @team_wecan_bot] is RUNNING on Cloud! Target: boost-tracker-v2');
 
   bot.on('polling_error', (err) => {
-    console.log('[WeCan Bot Polling notice]:', err.code || err.message);
+    console.log('[WeCan Bot Polling notice]:', err.message);
   });
 
   const pendingOrders = new Map();
+  const pendingDateConfirmOrders = new Map();
+
+  function formatKhmerDisplayDate(isoDate) {
+    if (!isoDate) return '';
+    const parts = isoDate.split('-');
+    if (parts.length === 3) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+    return isoDate;
+  }
   loadMetadata();
 
   async function getNextOrderNumber() {
@@ -742,6 +752,215 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
     }
   });
 
+  async function processVerifiedOrder(parsed, chatId, replyToMsgId, editMessageId = null) {
+    await loadMetadata();
+
+    const dup = await checkDuplicateOrder({
+      customerPhone: parsed.customerPhone,
+      destination: parsed.destination,
+      date: parsed.date,
+    });
+
+    if (dup) {
+      const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយ (ទិន្នន័យស្ទួន)!
+-----------------------------------------
+📞 លេខភ្ញៀវ: ${dup.customerPhone}
+📍 ទីតាំង: ${dup.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
+📅 កាលបរិច្ឆេទ: ${dup.date}
+👨‍💼 អ្នកលក់: ${dup.sellerName || 'N/A'}
+🛍️ ឈុត: ${dup.tubes || parsed.pkg.tubes} ទីប ($${dup.price || parsed.pkg.price})
+-----------------------------------------
+👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
+
+      if (editMessageId) {
+        try {
+          await bot.editMessageText(dupMsg, {
+            chat_id: chatId,
+            message_id: editMessageId,
+          });
+          return;
+        } catch (e) {}
+      }
+      return bot.sendMessage(chatId, dupMsg, {
+        reply_to_message_id: replyToMsgId,
+      });
+    }
+
+    const hasExplicitSeller = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' && parsed.sellerName.trim().length > 0;
+
+    if (hasExplicitSeller) {
+      const leaderInfo = getTeamLeaderInfo(parsed.sellerName);
+      const memberInfo = !leaderInfo ? getMemberTeamInfo(parsed.sellerName) : null;
+
+      const orderNumber = await getNextOrderNumber();
+      const completeOrder = buildCompleteOrder({
+        parsed,
+        orderNumber,
+        sellerRole: 'seller',
+        paymentStatus: parsed.paymentStatus || 'unpaid',
+        teamLeader: leaderInfo ? leaderInfo.leaderName : (memberInfo?.leaderName || parsed.teamLeader || 'ឡា ធីតា'),
+      });
+      const canonicalSeller = getCanonicalSellerName(parsed.sellerName);
+      completeOrder.sellerName = canonicalSeller;
+      completeOrder.actualSeller = canonicalSeller;
+      completeOrder.commissionSeller = null;
+      completeOrder.sellerCommission = 0;
+      completeOrder.isCommissionSale = false;
+
+      if (leaderInfo) {
+        completeOrder.sellerName = leaderInfo.leaderName;
+        completeOrder.actualSeller = leaderInfo.leaderName;
+        completeOrder.teamLeader = leaderInfo.leaderName;
+        completeOrder.teamGroup = leaderInfo.groupName;
+      } else if (memberInfo) {
+        const memberCanonical = memberInfo.memberName || canonicalSeller;
+        completeOrder.sellerName = memberCanonical;
+        completeOrder.actualSeller = memberCanonical;
+        completeOrder.teamLeader = memberInfo.leaderName || completeOrder.teamLeader;
+        completeOrder.teamGroup = memberInfo.groupName || completeOrder.teamGroup;
+        completeOrder.saleMode = 'solo';
+        completeOrder.isCommissionSale = false;
+        completeOrder.commissionSeller = null;
+        completeOrder.sellerCommission = 0;
+      }
+
+      await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
+
+      const pkgTitle = formatPackageTitle(completeOrder);
+      const advisorLine = completeOrder.advisorPhone ? '\n☎️ អ្នកប្រឹក្សា: ' + completeOrder.advisorPhone : '';
+      const productTypeLine = completeOrder.productType ? '\n🏷️ ប្រភេទ: ' + completeOrder.productType : '';
+
+      if (leaderInfo) {
+        const commMembers = getCommissionMembersForLeader(leaderInfo.leaderName);
+        if (commMembers.length > 0) {
+          const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (មេក្រុម): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ (ឬមេក្រុមផ្ទាល់)៖';
+
+          console.log('[WeCan Bot Step 1: Member Pick] #' + orderNumber + ' for leader: ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
+
+          if (editMessageId) {
+            try {
+              await bot.editMessageText(promptMsg, {
+                chat_id: chatId,
+                message_id: editMessageId,
+                reply_markup: {
+                  inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers),
+                },
+              });
+              return;
+            } catch (e) {}
+          }
+
+          return bot.sendMessage(chatId, promptMsg, {
+            reply_to_message_id: replyToMsgId,
+            reply_markup: {
+              inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers),
+            },
+          });
+        }
+      }
+
+      const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
+        ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+        : completeOrder.companyDeliveryType === 'jt'
+        ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
+        : completeOrder.companyDeliveryType === 'cod'
+        ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
+        : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
+
+      const unitsDetail = completeOrder.cans > 0
+        ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
+        : `${completeOrder.tubes} ទីប`;
+
+      const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
+-----------------------------------------
+📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
+📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
+🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
+🚚 សេវាដឹក: ${deliveryTypeBadge}
+👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
+🏢 ក្រុម: ${completeOrder.teamLeader}
+🧪 ចំនួនលក់: ${unitsDetail}
+📅 កាលបរិច្ឆេទ: ${completeOrder.date}
+-----------------------------------------
+👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
+
+      console.log(`[WeCan Bot Step 1: Payment Prompt for Member] #${orderNumber} (${completeOrder.sellerName})`);
+
+      if (editMessageId) {
+        try {
+          await bot.editMessageText(promptMsg, {
+            chat_id: chatId,
+            message_id: editMessageId,
+            reply_markup: {
+              inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
+            },
+          });
+          return;
+        } catch (e) {}
+      }
+
+      return bot.sendMessage(chatId, promptMsg, {
+        reply_to_message_id: replyToMsgId,
+        reply_markup: {
+          inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
+        },
+      });
+    } else {
+      const pendingId = `p${Date.now().toString(36)}`;
+      pendingOrders.set(pendingId, {
+        parsed,
+        chatId,
+        originalMsgId: replyToMsgId,
+        createdAt: Date.now(),
+      });
+
+      setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
+
+      const keyboardRows = [];
+      let currentRow = [];
+
+      cachedSellers.slice(0, 14).forEach((s, idx) => {
+        const sName = typeof s === 'string' ? s : s.name;
+        currentRow.push({
+          text: `💼 ${sName}`,
+          callback_data: `pick_${pendingId}_${idx}`,
+        });
+
+        if (currentRow.length === 2) {
+          keyboardRows.push(currentRow);
+          currentRow = [];
+        }
+      });
+
+      if (currentRow.length > 0) keyboardRows.push(currentRow);
+      keyboardRows.push([{ text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` }]);
+
+      const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់!
+-----------------------------------------
+📞 ភ្ញៀវ: ${parsed.customerPhone}
+📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
+🛍️ ឈុត: ${parsed.pkg.nameKm} ($${parsed.pkg.price})
+-----------------------------------------
+👉 សូមជ្រើសរើសឈ្មោះអ្នកលក់ដើម្បីកត់ត្រា៖`;
+
+      if (editMessageId) {
+        try {
+          await bot.editMessageText(promptMsg, {
+            chat_id: chatId,
+            message_id: editMessageId,
+            reply_markup: { inline_keyboard: keyboardRows },
+          });
+          return;
+        } catch (e) {}
+      }
+
+      return bot.sendMessage(chatId, promptMsg, {
+        reply_to_message_id: replyToMsgId,
+        reply_markup: { inline_keyboard: keyboardRows },
+      });
+    }
+  }
+
   bot.on('message', async (msg) => {
     if (!msg.text || msg.text.startsWith('/')) return;
 
@@ -758,171 +977,45 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const parsed = parseOrderText(block);
         if (!parsed || !parsed.customerPhone || parsed.customerPhone === 'N/A') continue;
 
-        await loadMetadata();
-
-        const dup = await checkDuplicateOrder({
-          customerPhone: parsed.customerPhone,
-          destination: parsed.destination,
-          date: parsed.date,
-        });
-
-        if (dup) {
-          const dupMsg = `⚠️ ការកុម្ម៉ង់នេះបានកត់ត្រារួចហើយ (ទិន្នន័យស្ទួន)!
------------------------------------------
-📞 លេខភ្ញៀវ: ${dup.customerPhone}
-📍 ទីតាំង: ${dup.destination || 'N/A'}, ខេត្ត${parsed.provinceKm}
-📅 កាលបរិច្ឆេទ: ${dup.date}
-👨‍💼 អ្នកលក់: ${dup.sellerName || 'N/A'}
-🛍️ ឈុត: ${dup.tubes || parsed.pkg.tubes} ទីប ($${dup.price || parsed.pkg.price})
------------------------------------------
-👉 Bot បានចាប់យកទិន្នន័យតែម្តងប៉ុណ្ណោះ មិនកត់ត្រាស្ទួនឡើងវិញឡើយ!`;
-
-          return bot.sendMessage(chatId, dupMsg, {
-            reply_to_message_id: msg.message_id,
-          });
-        }
-
-        const hasExplicitSeller = parsed.sellerName && parsed.sellerName !== 'ទូទៅ' && parsed.sellerName.trim().length > 0;
-
-        if (hasExplicitSeller) {
-          const leaderInfo = getTeamLeaderInfo(parsed.sellerName);
-          const memberInfo = !leaderInfo ? getMemberTeamInfo(parsed.sellerName) : null;
-
-          const orderNumber = await getNextOrderNumber();
-          const completeOrder = buildCompleteOrder({
-            parsed,
-            orderNumber,
-            sellerRole: 'seller',
-            paymentStatus: parsed.paymentStatus || 'unpaid',
-            teamLeader: leaderInfo ? leaderInfo.leaderName : (memberInfo?.leaderName || parsed.teamLeader || 'ឡា ធីតា'),
-          });
-          const canonicalSeller = getCanonicalSellerName(parsed.sellerName);
-          completeOrder.sellerName = canonicalSeller;
-          completeOrder.actualSeller = canonicalSeller;
-          completeOrder.commissionSeller = null;
-          completeOrder.sellerCommission = 0;
-          completeOrder.isCommissionSale = false;
-
-          if (leaderInfo) {
-            completeOrder.sellerName = leaderInfo.leaderName;
-            completeOrder.actualSeller = leaderInfo.leaderName;
-            completeOrder.teamLeader = leaderInfo.leaderName;
-            completeOrder.teamGroup = leaderInfo.groupName;
-          } else if (memberInfo) {
-            const memberCanonical = memberInfo.memberName || canonicalSeller;
-            completeOrder.sellerName = memberCanonical;
-            completeOrder.actualSeller = memberCanonical;
-            completeOrder.teamLeader = memberInfo.leaderName || completeOrder.teamLeader;
-            completeOrder.teamGroup = memberInfo.groupName || completeOrder.teamGroup;
-            // When order is sent explicitly with member's name as seller,
-            // it is their OWN solo sale (not through the team leader).
-            completeOrder.saleMode = 'solo';
-            completeOrder.isCommissionSale = false;
-            completeOrder.commissionSeller = null;
-            completeOrder.sellerCommission = 0;
-          }
-
-          // Save draft in pending_orders (DO NOT SAVE TO orders COLLECTION YET!)
-          await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
-
-          const pkgTitle = formatPackageTitle(completeOrder);
-          const advisorLine = completeOrder.advisorPhone ? '\n☎️ អ្នកប្រឹក្សា: ' + completeOrder.advisorPhone : '';
-          const productTypeLine = completeOrder.productType ? '\n🏷️ ប្រភេទ: ' + completeOrder.productType : '';
-
-          if (leaderInfo) {
-            const commMembers = getCommissionMembersForLeader(leaderInfo.leaderName);
-            if (commMembers.length > 0) {
-              const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (មេក្រុម): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ (ឬមេក្រុមផ្ទាល់)៖';
-
-              console.log('[WeCan Bot Step 1: Member Pick] #' + orderNumber + ' for leader: ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
-
-              return bot.sendMessage(chatId, promptMsg, {
-                reply_to_message_id: msg.message_id,
-                reply_markup: {
-                  inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers),
-                },
-              });
-            }
-          }
-
-          // Case 2: Member drop (or leader without subordinates)
-          // Prompt to choose payment status immediately to finalize order!
-          const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
-            ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
-            : completeOrder.companyDeliveryType === 'jt'
-            ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
-            : completeOrder.companyDeliveryType === 'cod'
-            ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
-            : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
-
-          const unitsDetail = completeOrder.cans > 0
-            ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-            : `${completeOrder.tubes} ទីប`;
-
-          const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
------------------------------------------
-📞 ភ្ញៀវ: ${completeOrder.customerPhone}${advisorLine}${productTypeLine}
-📍 ទីតាំង: ${completeOrder.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
-🚚 សេវាដឹក: ${deliveryTypeBadge}
-👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
-🏢 ក្រុម: ${completeOrder.teamLeader}
-🧪 ចំនួនលក់: ${unitsDetail}
-📅 កាលបរិច្ឆេទ: ${completeOrder.date}
------------------------------------------
-👉 សូមជ្រើសរើសស្ថានភាពទូទាត់ប្រាក់ដើម្បីបញ្ចប់ការកត់ត្រា៖`;
-
-          console.log(`[WeCan Bot Step 1: Payment Prompt for Member] #${orderNumber} (${completeOrder.sellerName})`);
-
-          return bot.sendMessage(chatId, promptMsg, {
-            reply_to_message_id: msg.message_id,
-            reply_markup: {
-              inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
-            },
-          });
-        } else {
-          const pendingId = `p${Date.now().toString(36)}`;
-          pendingOrders.set(pendingId, {
+        const today = getKhmerToday();
+        if (parsed.date && parsed.date !== today) {
+          const pendingDateId = `dt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+          pendingDateConfirmOrders.set(pendingDateId, {
             parsed,
             chatId,
-            originalMsgId: msg.message_id,
+            replyToMsgId: msg.message_id,
             createdAt: Date.now(),
           });
+          setTimeout(() => pendingDateConfirmOrders.delete(pendingDateId), 30 * 60 * 1000);
 
-          setTimeout(() => pendingOrders.delete(pendingId), 30 * 60 * 1000);
+          const orderDateDisplay = formatKhmerDisplayDate(parsed.date);
+          const todayDisplay = formatKhmerDisplayDate(today);
 
-          const keyboardRows = [];
-          let currentRow = [];
-
-          cachedSellers.slice(0, 14).forEach((s, idx) => {
-            const sName = typeof s === 'string' ? s : s.name;
-            currentRow.push({
-              text: `💼 ${sName}`,
-              callback_data: `pick_${pendingId}_${idx}`,
-            });
-
-            if (currentRow.length === 2) {
-              keyboardRows.push(currentRow);
-              currentRow = [];
-            }
-          });
-
-          if (currentRow.length > 0) keyboardRows.push(currentRow);
-          keyboardRows.push([{ text: '❌ បោះបង់ (Cancel)', callback_data: `cancel_${pendingId}` }]);
-
-          const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់!
+          const confirmPrompt = `⚠️ ការបញ្ជាក់កាលបរិច្ឆេទកុម្ម៉ង់!
 -----------------------------------------
 📞 ភ្ញៀវ: ${parsed.customerPhone}
-📍 ទីតាំង: ${parsed.destination}, ខេត្ត${parsed.provinceKm}
-🛍️ ឈុត: ${parsed.pkg.nameKm} ($${parsed.pkg.price})
+📍 ទីតាំង: ${parsed.destination || 'N/A'}, ខេត្ត${parsed.provinceKm || ''}
+🛍️ ឈុត: ${parsed.pkg?.nameKm || ''} ($${parsed.pkg?.price || 0})
+👨‍💼 អ្នកលក់: ${parsed.sellerName || 'N/A'}
+📅 កាលបរិច្ឆេទលើ Order: ${orderDateDisplay}
+⏰ ថ្ងៃនេះជាក់ស្ដែង: ${todayDisplay}
 -----------------------------------------
-👉 សូមជ្រើសរើសឈ្មោះអ្នកលក់ដើម្បីកត់ត្រា៖`;
+❓ តើអ្នកប្រាកដទេថានេះជាការកុម្ម៉ង់ថ្ងៃ ${orderDateDisplay}?`;
 
-          return bot.sendMessage(chatId, promptMsg, {
+          return bot.sendMessage(chatId, confirmPrompt, {
             reply_to_message_id: msg.message_id,
-            reply_markup: { inline_keyboard: keyboardRows },
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: '❌ បោះបង់', callback_data: `date_cancel:${pendingDateId}` },
+                  { text: '✅ យល់ព្រម', callback_data: `date_confirm:${pendingDateId}` },
+                ],
+              ],
+            },
           });
         }
+
+        await processVerifiedOrder(parsed, chatId, msg.message_id);
       }
     } catch (err) {
       console.error('[WeCan Bot] Error processing message:', err);
@@ -935,6 +1028,34 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
     const chatId = queryMsg.message.chat.id;
     const messageId = queryMsg.message.message_id;
+
+    if (data.startsWith('date_cancel:')) {
+      const pendingDateId = data.replace('date_cancel:', '');
+      const pending = pendingDateConfirmOrders.get(pendingDateId);
+      pendingDateConfirmOrders.delete(pendingDateId);
+      bot.answerCallbackQuery(queryMsg.id, { text: 'បានបោះបង់ការកត់ត្រា' }).catch(() => {});
+      const dateText = pending ? formatKhmerDisplayDate(pending.parsed.date) : '';
+      return bot.editMessageText(`❌ បានបោះបង់ការកត់ត្រាការកុម្ម៉ង់${dateText ? ` ថ្ងៃ ${dateText}` : ''}។`, {
+        chat_id: chatId,
+        message_id: messageId,
+      }).catch(() => {});
+    }
+
+    if (data.startsWith('date_confirm:')) {
+      const pendingDateId = data.replace('date_confirm:', '');
+      const pending = pendingDateConfirmOrders.get(pendingDateId);
+      if (!pending) {
+        bot.answerCallbackQuery(queryMsg.id, { text: 'សំណើនេះបានផុតកំណត់ហើយ' }).catch(() => {});
+        return bot.editMessageText('⚠️ សំណើផ្ទៀងផ្ទាត់កាលបរិច្ឆេទនេះបានផុតកំណត់ហើយ។ សូមទម្លាក់សារកុម្ម៉ង់ម្ដងទៀត។', {
+          chat_id: chatId,
+          message_id: messageId,
+        }).catch(() => {});
+      }
+      pendingDateConfirmOrders.delete(pendingDateId);
+      bot.answerCallbackQuery(queryMsg.id, { text: 'បានយល់ព្រម! កំពុងដំណើរការ...' }).catch(() => {});
+      await processVerifiedOrder(pending.parsed, pending.chatId, pending.replyToMsgId, messageId);
+      return;
+    }
 
     if (data.startsWith('cancel_')) {
       const pendingId = data.replace('cancel_', '');
