@@ -63,6 +63,19 @@ const SELLER_COMMISSION_RATES = {
   },
 };
 
+// Check if raw name matches Sing Eu (Team Leader)
+function isSingEuLeader(name = '') {
+  if (!name) return false;
+  const clean = String(name).replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
+  return (
+    clean.includes('ស៊ីង') ||
+    clean.includes('សុីង') ||
+    clean.includes('ស៊ឹង') ||
+    clean.includes('សុឺង') ||
+    clean.includes('sing')
+  );
+}
+
 // Normalize Seller Names (Standardizing Team Leaders)
 function normalizeSellerName(name) {
   if (!name) return 'ទូទៅ';
@@ -522,4 +535,5 @@ module.exports = {
   getKhmerToday,
   normalizeSellerName,
   detectTeamLeader,
+  isSingEuLeader,
 };
