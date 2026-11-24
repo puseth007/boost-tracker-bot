@@ -38,6 +38,7 @@ const PACKAGES = [
   { id: 'combo_2_2', tubes: 2, cans: 2, nameKm: 'ឈុត ២ កំប៉ុង + ២ ទីប', price: 90 },
   { id: 'combo_3_3', tubes: 3, cans: 3, nameKm: 'ឈុត ៣ កំប៉ុង + ៣ ទីប', price: 135 },
   { id: 'combo_5_5', tubes: 5, cans: 5, nameKm: 'ឈុត ៥ កំប៉ុង + ៥ ទីប', price: 180 },
+  { id: 'set_other', tubes: 0, cans: 0, nameKm: 'ឈុត ផ្សេងៗ', price: 0 },
 ];
 
 const SELLER_COMMISSION_RATES = {
@@ -50,6 +51,7 @@ const SELLER_COMMISSION_RATES = {
     combo_2_2: 10.0,
     combo_3_3: 15.0,
     combo_5_5: 25.0,
+    set_other: 0,
   },
   cod: {
     set_1: 0.7,
@@ -60,21 +62,9 @@ const SELLER_COMMISSION_RATES = {
     combo_2_2: 9.5,
     combo_3_3: 14.5,
     combo_5_5: 24.5,
+    set_other: 0,
   },
 };
-
-// Check if raw name matches Sing Eu (Team Leader)
-function isSingEuLeader(name = '') {
-  if (!name) return false;
-  const clean = String(name).replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
-  return (
-    clean.includes('ស៊ីង') ||
-    clean.includes('សុីង') ||
-    clean.includes('ស៊ឹង') ||
-    clean.includes('សុឺង') ||
-    clean.includes('sing')
-  );
-}
 
 // Normalize Seller Names (Standardizing Team Leaders)
 function normalizeSellerName(name) {
@@ -370,34 +360,53 @@ function parseOrderText(text) {
     (normPkg.includes('ឫសដូង') || normPkg.includes('ឬសដូង') || normPkg.includes('បួសដូង') || normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')) ||
     (fullTextNorm.includes('ឫសដូង') || fullTextNorm.includes('ឬសដូង') || fullTextNorm.includes('បួសដូង') || (fullTextNorm.includes('ថ្នាំ') && fullTextNorm.includes('គ្រីម')));
 
-  let selectedPkg = PACKAGES[1]; // Default to set_3
+  let selectedPkg = null;
 
-  // Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
-  if (
-    (hasMedicineCombo && (normPkg.includes('5') || normPkg.includes('៥') || fullTextNorm.includes('5+5') || fullTextNorm.includes('5ថ្នាំ'))) ||
-    parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190)
-  ) {
-    selectedPkg = PACKAGES.find((p) => p.id === 'combo_5_5') || PACKAGES[7];
-  } else if (
-    (hasMedicineCombo && (normPkg.includes('3') || normPkg.includes('៣') || fullTextNorm.includes('3+3') || fullTextNorm.includes('3ថ្នាំ'))) ||
-    parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140)
-  ) {
-    selectedPkg = PACKAGES.find((p) => p.id === 'combo_3_3') || PACKAGES[6];
-  } else if (
-    (hasMedicineCombo && (normPkg.includes('2') || normPkg.includes('២') || fullTextNorm.includes('2+2') || fullTextNorm.includes('2ថ្នាំ'))) ||
-    parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95)
-  ) {
-    selectedPkg = PACKAGES.find((p) => p.id === 'combo_2_2') || PACKAGES[5];
-  } else if (hasMedicineCombo || (parsedPrice === 50 && (normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')))) {
-    selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || PACKAGES[4];
-  } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
-    selectedPkg = PACKAGES[3]; // set_10 ($70)
-  } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3') || parsedPrice === 50) {
-    selectedPkg = PACKAGES[2]; // set_6 ($50)
-  } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || normPkg.includes('3') || normPkg.includes('៣') || parsedPrice === 30) {
-    selectedPkg = PACKAGES[1]; // set_3 ($30)
-  } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
-    selectedPkg = PACKAGES[0]; // set_1 ($17)
+  const isExplicitOther =
+    normPkg.includes('ផ្សេង') ||
+    normPkg.includes('other') ||
+    fullTextNorm.includes('ឈុត ផ្សេង') ||
+    fullTextNorm.includes('ឈុតផ្សេង');
+
+  if (!isExplicitOther) {
+    // Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
+    if (
+      (hasMedicineCombo && (normPkg.includes('5') || normPkg.includes('៥') || fullTextNorm.includes('5+5') || fullTextNorm.includes('5ថ្នាំ'))) ||
+      parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190)
+    ) {
+      selectedPkg = PACKAGES.find((p) => p.id === 'combo_5_5') || PACKAGES[7];
+    } else if (
+      (hasMedicineCombo && (normPkg.includes('3') || normPkg.includes('៣') || fullTextNorm.includes('3+3') || fullTextNorm.includes('3ថ្នាំ'))) ||
+      parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140)
+    ) {
+      selectedPkg = PACKAGES.find((p) => p.id === 'combo_3_3') || PACKAGES[6];
+    } else if (
+      (hasMedicineCombo && (normPkg.includes('2') || normPkg.includes('២') || fullTextNorm.includes('2+2') || fullTextNorm.includes('2ថ្នាំ'))) ||
+      parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95)
+    ) {
+      selectedPkg = PACKAGES.find((p) => p.id === 'combo_2_2') || PACKAGES[5];
+    } else if (hasMedicineCombo || (parsedPrice === 50 && (normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')))) {
+      selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || PACKAGES[4];
+    } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
+      selectedPkg = PACKAGES[3]; // set_10 ($70)
+    } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3') || parsedPrice === 50) {
+      selectedPkg = PACKAGES[2]; // set_6 ($50)
+    } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (normPkg.includes('3') && !normPkg.includes('33') && !normPkg.includes('135')) || normPkg.includes('៣') || parsedPrice === 30) {
+      selectedPkg = PACKAGES[1]; // set_3 ($30)
+    } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
+      selectedPkg = PACKAGES[0]; // set_1 ($17)
+    }
+  }
+
+  // If not matched to standard package, fallback to "ឈុត ផ្សេងៗ" (Custom Package)
+  if (!selectedPkg) {
+    selectedPkg = PACKAGES.find((p) => p.id === 'set_other') || {
+      id: 'set_other',
+      tubes: 0,
+      cans: 0,
+      nameKm: 'ឈុត ផ្សេងៗ',
+      price: parsedPrice || 0,
+    };
   }
 
   // Apply parsed price if valid and positive
@@ -483,8 +492,8 @@ function buildCompleteOrder({
   // Team members sell for themselves (no commission deduction)
   const sellerCommission = 0;
 
-  const tubes = pkg.tubes || 1;
-  const cans = pkg.cans || 0;
+  const tubes = typeof pkg.tubes === 'number' ? pkg.tubes : (pkg.id === 'set_other' ? 0 : 1);
+  const cans = typeof pkg.cans === 'number' ? pkg.cans : 0;
 
   // Cream cost = $3.50/tube, ឫសដូង can cost = $18.00/can
   const productCost = (tubes * 3.5) + (cans * 18.0);
@@ -535,5 +544,4 @@ module.exports = {
   getKhmerToday,
   normalizeSellerName,
   detectTeamLeader,
-  isSingEuLeader,
 };

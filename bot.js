@@ -69,6 +69,21 @@ setInterval(() => {
   https.get(CLOUD_URL, () => {}).on('error', () => {});
 }, 8 * 60 * 1000); // Ping every 8 minutes
 
+function formatPackageTitle(order) {
+  if (!order) return 'ឈុត';
+  if (order.packageId === 'set_other') return 'ឈុត ផ្សេងៗ';
+  if (order.packageId === 'combo_5_5' || (order.cans === 5 && order.tubes === 5) || order.price === 180) return 'ឈុត ៥ កំប៉ុង + ៥ ទីប';
+  if (order.packageId === 'combo_3_3' || (order.cans === 3 && order.tubes === 3) || order.price === 135) return 'ឈុត ៣ កំប៉ុង + ៣ ទីប';
+  if (order.packageId === 'combo_2_2' || (order.cans === 2 && order.tubes === 2) || order.price === 90) return 'ឈុត ២ កំប៉ុង + ២ ទីប';
+  if (order.packageId === 'combo_1_1' || (order.cans === 1 && order.tubes === 1) || (order.cans > 0 && order.tubes > 0)) return 'ឈុត ១ កំប៉ុង + ១ ទីប';
+  if (order.tubes === 10 || order.packageId === 'set_10') return 'ឈុត ៥ + ៥ ទីប';
+  if (order.tubes === 6 || order.packageId === 'set_6') return 'ឈុត ៣ + ៣ ទីប';
+  if (order.tubes === 3 || order.packageId === 'set_3') return 'ឈុត ២ + ១ ទីប';
+  if (order.tubes === 1 || order.packageId === 'set_1') return 'ឈុត ១ ទីប';
+  if (order.tubes > 0) return `ឈុត ${order.tubes} ទីប`;
+  return 'ឈុត ផ្សេងៗ';
+}
+
 // Helper to generate the 2 clear payment buttons
 function getPaymentInlineKeyboard(orderId, currentStatus) {
   const isPaid = currentStatus === 'paid';
@@ -955,9 +970,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
         ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
         : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
-      const pkgTitle = completeOrder.packageId === 'combo_1_1'
-        ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-        : `ឈុត ${completeOrder.tubes} ទីប`;
+      const pkgTitle = formatPackageTitle(completeOrder);
 
       const unitsDetail = completeOrder.cans > 0
         ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
@@ -1424,9 +1437,7 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
           ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
           : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
-        const pkgTitle = completeOrder.packageId === 'combo_1_1'
-          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${completeOrder.tubes} ទីប`;
+        const pkgTitle = formatPackageTitle(completeOrder);
 
         const unitsDetail = completeOrder.cans > 0
           ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
