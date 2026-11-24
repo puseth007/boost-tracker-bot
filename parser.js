@@ -356,9 +356,31 @@ function parseOrderText(text) {
   const normPkg = normalizeKhmerDigits(packageRaw).toLowerCase();
   const fullTextNorm = normalizeKhmerDigits(text).toLowerCase();
 
-  const hasMedicineCombo =
-    (normPkg.includes('ឫសដូង') || normPkg.includes('ឬសដូង') || normPkg.includes('បួសដូង') || normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')) ||
-    (fullTextNorm.includes('ឫសដូង') || fullTextNorm.includes('ឬសដូង') || fullTextNorm.includes('បួសដូង') || (fullTextNorm.includes('ថ្នាំ') && fullTextNorm.includes('គ្រីម')));
+  const hasCanWord =
+    normPkg.includes('កំប៉ុង') ||
+    normPkg.includes('កំបុង') ||
+    normPkg.includes('ថ្នាំ') ||
+    normPkg.includes('ឫសដូង') ||
+    normPkg.includes('ឬសដូង') ||
+    normPkg.includes('បួសដូង') ||
+    fullTextNorm.includes('កំប៉ុង') ||
+    fullTextNorm.includes('ឫសដូង') ||
+    fullTextNorm.includes('ឬសដូង');
+
+  const hasTubeWord =
+    normPkg.includes('ទីប') ||
+    normPkg.includes('គ្រីម') ||
+    normPkg.includes('ក្រីម') ||
+    fullTextNorm.includes('ទីប') ||
+    fullTextNorm.includes('គ្រីម');
+
+  // A combo package (ថ្នាំកំប៉ុង + គ្រីម) requires BOTH can/medicine AND tube/cream
+  // or explicit combo notations like "1+1", "2+2", "3+3", "5+5", "1ថែម1", etc.
+  const hasBothCanAndTube =
+    (hasCanWord && hasTubeWord) ||
+    normPkg.includes('ថ្នាំ+គ្រីម') ||
+    normPkg.includes('កំប៉ុង+ទីប') ||
+    normPkg.includes('កំប៉ុង+គ្រីម');
 
   let selectedPkg = null;
 
@@ -369,41 +391,79 @@ function parseOrderText(text) {
     fullTextNorm.includes('ឈុតផ្សេង');
 
   if (!isExplicitOther) {
-    // Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
+    // 1. Combo Packages: 5+5 ($180), 3+3 ($135), 2+2 ($90), 1+1 ($50)
+    // ONLY matched if it has BOTH cans & tubes, or explicit combo "X+X" or exact combo price
     if (
-      (hasMedicineCombo && (normPkg.includes('5') || normPkg.includes('៥') || fullTextNorm.includes('5+5') || fullTextNorm.includes('5ថ្នាំ'))) ||
-      parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190)
+      (hasBothCanAndTube && (normPkg.includes('5+5') || normPkg.includes('5ថែម5') || (normPkg.includes('5') && normPkg.includes('+')))) ||
+      (parsedPrice === 180 || (parsedPrice && parsedPrice >= 170 && parsedPrice <= 190 && hasCanWord))
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_5_5') || PACKAGES[7];
     } else if (
-      (hasMedicineCombo && (normPkg.includes('3') || normPkg.includes('៣') || fullTextNorm.includes('3+3') || fullTextNorm.includes('3ថ្នាំ'))) ||
-      parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140)
+      (hasBothCanAndTube && (normPkg.includes('3+3') || normPkg.includes('3ថែម3') || (normPkg.includes('3') && normPkg.includes('+')))) ||
+      (parsedPrice === 135 || (parsedPrice && parsedPrice >= 130 && parsedPrice <= 140 && hasCanWord))
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_3_3') || PACKAGES[6];
     } else if (
-      (hasMedicineCombo && (normPkg.includes('2') || normPkg.includes('២') || fullTextNorm.includes('2+2') || fullTextNorm.includes('2ថ្នាំ'))) ||
-      parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95)
+      (hasBothCanAndTube && (normPkg.includes('2+2') || normPkg.includes('2ថែម2') || (normPkg.includes('2') && normPkg.includes('+')))) ||
+      (parsedPrice === 90 || (parsedPrice && parsedPrice >= 85 && parsedPrice <= 95 && hasCanWord))
     ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_2_2') || PACKAGES[5];
-    } else if (hasMedicineCombo || (parsedPrice === 50 && (normPkg.includes('កំប៉ុង') || normPkg.includes('ថ្នាំ')))) {
+    } else if (
+      (hasBothCanAndTube && (normPkg.includes('1+1') || normPkg.includes('1ថែម1') || (normPkg.includes('1') && normPkg.includes('+')))) ||
+      (parsedPrice === 50 && hasBothCanAndTube)
+    ) {
       selectedPkg = PACKAGES.find((p) => p.id === 'combo_1_1') || PACKAGES[4];
-    } else if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
-      selectedPkg = PACKAGES[3]; // set_10 ($70)
-    } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3') || parsedPrice === 50) {
-      selectedPkg = PACKAGES[2]; // set_6 ($50)
-    } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (normPkg.includes('3') && !normPkg.includes('33') && !normPkg.includes('135')) || normPkg.includes('៣') || parsedPrice === 30) {
-      selectedPkg = PACKAGES[1]; // set_3 ($30)
-    } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
-      selectedPkg = PACKAGES[0]; // set_1 ($17)
+    } 
+    // 2. Pure Cream Packages: 5+5 ($70), 3+3 ($50), 2+1 ($30), 1 ($17)
+    // ONLY matched if it does NOT have can/medicine words
+    else if (!hasCanWord) {
+      if (normPkg.includes('10') || normPkg.includes('5+5') || normPkg.includes('5ថែម5') || parsedPrice === 70) {
+        selectedPkg = PACKAGES[3]; // set_10 ($70)
+      } else if (normPkg.includes('6') || normPkg.includes('3+3') || normPkg.includes('3ថែម3') || parsedPrice === 50) {
+        selectedPkg = PACKAGES[2]; // set_6 ($50)
+      } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (normPkg.includes('3') && !normPkg.includes('33') && !normPkg.includes('135')) || normPkg.includes('៣') || parsedPrice === 30) {
+        selectedPkg = PACKAGES[1]; // set_3 ($30)
+      } else if (normPkg.includes('1') || normPkg.includes('១') || parsedPrice === 17) {
+        selectedPkg = PACKAGES[0]; // set_1 ($17)
+      }
     }
   }
 
-  // If not matched to standard package, fallback to "ឈុត ផ្សេងៗ" (Custom Package)
+  // 3. Fallback to "ឈុត ផ្សេងៗ" (Custom Package)
+  // Handles:
+  // - Pure can orders without cream (e.g. ៣កំប៉ុង $100, 1កំប៉ុង, 2កំប៉ុង)
+  // - Custom cream tube counts (e.g. 4 ទីប, 8 ទីប)
+  // - Any non-standard packages
   if (!selectedPkg) {
-    selectedPkg = PACKAGES.find((p) => p.id === 'set_other') || {
+    let customCans = 0;
+    let customTubes = 0;
+
+    const canMatch = normPkg.match(/(\d+)\s*(?:កំប៉ុង|កំបុង|កំប៉ុងថ្នាំ|ថ្នាំ)/);
+    const tubeMatch = normPkg.match(/(\d+)\s*(?:ទីប|ទីបគ្រីម|គ្រីម|ក្រីម)/);
+
+    if (canMatch) {
+      customCans = parseInt(canMatch[1], 10);
+    }
+    if (tubeMatch) {
+      customTubes = parseInt(tubeMatch[1], 10);
+    }
+
+    if (customCans === 0 && customTubes === 0) {
+      const numMatch = normPkg.match(/(\d+)/);
+      if (numMatch) {
+        const num = parseInt(numMatch[1], 10);
+        if (hasCanWord) {
+          customCans = num;
+        } else {
+          customTubes = num;
+        }
+      }
+    }
+
+    selectedPkg = {
       id: 'set_other',
-      tubes: 0,
-      cans: 0,
+      tubes: customTubes,
+      cans: customCans,
       nameKm: 'ឈុត ផ្សេងៗ',
       price: parsedPrice || 0,
     };

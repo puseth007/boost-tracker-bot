@@ -440,6 +440,15 @@ function formatPackageTitle(order) {
   return 'ឈុត ផ្សេងៗ';
 }
 
+function formatUnitsDetail(order) {
+  const tubes = Number(order?.tubes || 0);
+  const cans = Number(order?.cans || 0);
+  if (tubes > 0 && cans > 0) return `${tubes} ទីប + ${cans} កំប៉ុង`;
+  if (cans > 0) return `${cans} កំប៉ុង`;
+  if (tubes > 0) return `${tubes} ទីប`;
+  return '០ ទីប';
+}
+
 function calculateOrderCommission(orderData) {
   const tubes = Number(orderData.tubes || 0);
   const cans = Number(orderData.cans || 0);
@@ -869,9 +878,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
         : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
 
-      const unitsDetail = completeOrder.cans > 0
-        ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-        : `${completeOrder.tubes} ទីប`;
+      const unitsDetail = formatUnitsDetail(completeOrder);
 
       const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${orderNumber})
 -----------------------------------------
@@ -1112,9 +1119,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const pkgTitle = formatPackageTitle(completeOrder);
 
-        const unitsDetail = completeOrder.cans > 0
-          ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-          : `${completeOrder.tubes} ទីប`;
+        const unitsDetail = formatUnitsDetail(completeOrder);
 
         const promptMsg = `📦 ទទួលបានព័ត៌មានកុម្ម៉ង់! (#${orderNumber})
 -----------------------------------------
@@ -1222,9 +1227,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const pkgTitle = formatPackageTitle(updatedOrder);
 
-        const unitsDetail = updatedOrder.cans > 0
-          ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
-          : `${updatedOrder.tubes} ទីប`;
+        const unitsDetail = formatUnitsDetail(updatedOrder);
 
         const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
@@ -1327,9 +1330,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const pkgTitle = formatPackageTitle(updatedOrder);
 
-        const unitsDetail = updatedOrder.cans > 0
-          ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
-          : `${updatedOrder.tubes} ទីប`;
+        const unitsDetail = formatUnitsDetail(updatedOrder);
 
         const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
@@ -1500,9 +1501,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const pkgTitle = formatPackageTitle(updatedOrder);
 
-        const unitsDetail = updatedOrder.cans > 0
-          ? `${updatedOrder.tubes} ទីប + ${updatedOrder.cans} កំប៉ុង`
-          : `${updatedOrder.tubes} ទីប`;
+        const unitsDetail = formatUnitsDetail(updatedOrder);
 
         const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';

@@ -84,6 +84,15 @@ function formatPackageTitle(order) {
   return 'ឈុត ផ្សេងៗ';
 }
 
+function formatUnitsDetail(order) {
+  const tubes = Number(order?.tubes || 0);
+  const cans = Number(order?.cans || 0);
+  if (tubes > 0 && cans > 0) return `${tubes} ទីប + ${cans} កំប៉ុង`;
+  if (cans > 0) return `${cans} កំប៉ុង`;
+  if (tubes > 0) return `${tubes} ទីប`;
+  return '០ ទីប';
+}
+
 // Helper to generate the 2 clear payment buttons
 function getPaymentInlineKeyboard(orderId, currentStatus) {
   const isPaid = currentStatus === 'paid';
@@ -972,9 +981,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 
       const pkgTitle = formatPackageTitle(completeOrder);
 
-      const unitsDetail = completeOrder.cans > 0
-        ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-        : `${completeOrder.tubes} ទីប`;
+      const unitsDetail = formatUnitsDetail(completeOrder);
 
       const unassignedNotice = resolved.isUnassigned
         ? `\n💡 ចំណាំ: ឈ្មោះ «${completeOrder.sellerName}» មិនទាន់មានក្រុមក្នុងប្រព័ន្ធទេ! Bot បានដាក់ចូលក្នុង «មិនទាន់មានក្រុម» ជាបណ្ដោះអាសន្ន។ លោកអ្នកអាចចូលទៅផ្ទេរគាត់ចូលក្រុមត្រឹមត្រូវក្នុង App ទី ២ បានគ្រប់ពេល!`
@@ -1439,9 +1446,7 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
 
         const pkgTitle = formatPackageTitle(completeOrder);
 
-        const unitsDetail = completeOrder.cans > 0
-          ? `${completeOrder.tubes} ទីប + ${completeOrder.cans} កំប៉ុង`
-          : `${completeOrder.tubes} ទីប`;
+        const unitsDetail = formatUnitsDetail(completeOrder);
 
         const successMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${orderNumber}) [${shopName}]
 -----------------------------------------
@@ -1582,13 +1587,8 @@ ${syncResultFooter}
           ? `ក្រុមហ៊ុន COD ($${updatedOrder?.deliveryFee || 3})`
           : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder?.deliveryFee || 2})`;
 
-        const pkgTitle = updatedOrder?.packageId === 'combo_1_1'
-          ? 'ឈុត ១ កំប៉ុង + ១ គ្រីម'
-          : `ឈុត ${updatedOrder?.tubes || 3} ទីប`;
-
-        const unitsDetail = (updatedOrder?.cans || 0) > 0
-          ? `${updatedOrder?.tubes || 0} ទីប + ${updatedOrder?.cans} កំប៉ុង`
-          : `${updatedOrder?.tubes || 0} ទីប`;
+        const pkgTitle = formatPackageTitle(updatedOrder);
+        const unitsDetail = formatUnitsDetail(updatedOrder);
 
         const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! [${shopName}]
 -----------------------------------------
