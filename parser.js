@@ -66,6 +66,19 @@ const SELLER_COMMISSION_RATES = {
   },
 };
 
+// Check if raw name matches Sing Eu (Team Leader)
+function isSingEuLeader(name = '') {
+  if (!name) return false;
+  const clean = String(name).replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
+  return (
+    clean.includes('ស៊ីង') ||
+    clean.includes('សុីង') ||
+    clean.includes('ស៊ឹង') ||
+    clean.includes('សុឺង') ||
+    clean.includes('sing')
+  );
+}
+
 // Normalize Seller Names (Standardizing Team Leaders)
 function normalizeSellerName(name) {
   if (!name) return 'ទូទៅ';
@@ -147,8 +160,8 @@ function normalizeKhmerDigits(str) {
 function cleanLineText(str) {
   if (!str) return '';
   let res = str.replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F]/gu, '');
-  res = res.replace(/^[\s*#\-:៖•~`!@$%^&*()+=[\]{}'\"<>?\/]+/g, '');
-  res = res.replace(/[\s*#\-:៖•~`!@$%^&*()+=[\]{}'\"<>?\/]+$/g, '');
+  res = res.replace(/^[\s*#\-:៖•~`!@%^&*()+=[\]{}'\"<>?\/]+/g, '');
+  res = res.replace(/[\s*#\-:៖•~`!@%^&*()+=[\]{}'\"<>?\/]+$/g, '');
   return (res.toWellFormed ? res.toWellFormed() : res).trim();
 }
 
@@ -350,6 +363,13 @@ function parseOrderText(text) {
         }
       }
     }
+
+    if (!parsedPrice) {
+      const directMatch = normPrice.match(/(?:^|[^\d])(\d{1,3})(?:$|[^\d])/);
+      if (directMatch) {
+        parsedPrice = parseFloat(directMatch[1]);
+      }
+    }
   }
 
   // Package & Product Detection:
@@ -432,8 +452,8 @@ function parseOrderText(text) {
         selectedPkg = PACKAGES[2]; // set_6 ($50)
       } else if (normPkg.includes('2+1') || normPkg.includes('2ថែម1') || (plusMatch && plusMatch[1] === '2' && plusMatch[2] === '1') || normPkg.match(/\b3\s*ទីប/) || normPkg.includes('3 ទីប') || normPkg.includes('៣ ទីប') || parsedPrice === 30) {
         selectedPkg = PACKAGES[1]; // set_3 ($30)
-      } else if (((explicitTubes === 1 || normPkg.includes('1ទីប') || normPkg.includes('1 ទីប')) && !plusMatch && !normPkg.match(/\d{2,}/)) || normPkg === '1' || normPkg === '១' || parsedPrice === 17) {
-        selectedPkg = PACKAGES[0]; // set_1 ($17)
+      } else if (((explicitTubes === 1 || normPkg.includes('1ទីប') || normPkg.includes('1 ទីប')) && !plusMatch && !normPkg.match(/\d{2,}/)) || normPkg === '1' || normPkg === '១' || parsedPrice === 17 || parsedPrice === 15) {
+        selectedPkg = PACKAGES[0]; // set_1 ($17 or $15)
       }
     }
   }
@@ -482,6 +502,14 @@ function parseOrderText(text) {
     selectedPkg = {
       ...selectedPkg,
       price: parsedPrice,
+    };
+  }
+
+  // Ensure set_1 defaults to 17 if no specific price was parsed
+  if (selectedPkg.id === 'set_1' && (!selectedPkg.price || selectedPkg.price <= 0)) {
+    selectedPkg = {
+      ...selectedPkg,
+      price: 17,
     };
   }
 
