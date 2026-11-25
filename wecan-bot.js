@@ -260,7 +260,7 @@ function getCanonicalSellerName(name) {
   return name.replace(/[\u200B\u200C\u200D\uFE0E\uFE0F]+/g, '').replace(/\s+/g, ' ').trim();
 }
 
-// Dynamic Team & Leader Resolver from Firestore metadata (100% Unified Architecture)
+// Dynamic Team & Leader Resolver from Firestore metadata (100% Unified Architecture with Co-Leader support)
 function getTeamLeaderInfo(sellerName) {
   if (!sellerName) return null;
   const sNorm = normalizeNameForComparison(sellerName);
@@ -269,13 +269,72 @@ function getTeamLeaderInfo(sellerName) {
   if (Array.isArray(cachedGroups)) {
     for (const g of cachedGroups) {
       const leadNorm = normalizeNameForComparison(g.leaderName);
+      const coLeadNorm = normalizeNameForComparison(g.coLeaderName);
+
+      // 1a. Direct match for Main Leader
       if (leadNorm && (sNorm === leadNorm || sNorm.includes(leadNorm) || leadNorm.includes(sNorm))) {
         return {
           isLeader: true,
+          isCoLeader: false,
           leaderName: g.leaderName,
+          coLeaderName: g.coLeaderName || '',
+          actingLeaderName: g.leaderName,
           groupName: g.name || ('ក្រុម ' + g.leaderName),
           group: g,
         };
+      }
+
+      // 1b. Direct match for Co-Leader (coLeaderName)
+      if (coLeadNorm && (sNorm === coLeadNorm || sNorm.includes(coLeadNorm) || coLeadNorm.includes(sNorm))) {
+        return {
+          isLeader: true,
+          isCoLeader: true,
+          leaderName: g.leaderName,
+          coLeaderName: g.coLeaderName,
+          actingLeaderName: g.coLeaderName,
+          groupName: g.name || ('ក្រុម ' + g.leaderName),
+          group: g,
+        };
+      }
+
+      // 1c. Check leaderNames array
+      if (Array.isArray(g.leaderNames)) {
+        for (let i = 0; i < g.leaderNames.length; i++) {
+          const lItem = g.leaderNames[i];
+          const lItemNorm = normalizeNameForComparison(lItem);
+          if (lItemNorm && (sNorm === lItemNorm || sNorm.includes(lItemNorm) || lItemNorm.includes(sNorm))) {
+            const isCo = i > 0 || lItemNorm === coLeadNorm;
+            return {
+              isLeader: true,
+              isCoLeader: isCo,
+              leaderName: g.leaderName,
+              coLeaderName: isCo ? lItem : (g.coLeaderName || ''),
+              actingLeaderName: lItem,
+              groupName: g.name || ('ក្រុម ' + g.leaderName),
+              group: g,
+            };
+          }
+        }
+      }
+
+      // 1d. Check g.members for co_leader designated member
+      if (Array.isArray(g.members)) {
+        for (const m of g.members) {
+          const mName = typeof m === 'object' ? m.name : m;
+          const mNorm = normalizeNameForComparison(mName);
+          const isCo = typeof m === 'object' && (m.mode === 'co_leader' || m.sellMode === 'co_leader' || m.isCoLeader);
+          if (isCo && mNorm && (sNorm === mNorm || sNorm.includes(mNorm) || mNorm.includes(sNorm))) {
+            return {
+              isLeader: true,
+              isCoLeader: true,
+              leaderName: g.leaderName,
+              coLeaderName: mName,
+              actingLeaderName: mName,
+              groupName: g.name || ('ក្រុម ' + g.leaderName),
+              group: g,
+            };
+          }
+        }
       }
     }
   }
@@ -286,12 +345,22 @@ function getTeamLeaderInfo(sellerName) {
       if (typeof s === 'object' && s) {
         const sNameNorm = normalizeNameForComparison(s.name);
         if (sNameNorm && (sNorm === sNameNorm || sNorm.includes(sNameNorm) || sNameNorm.includes(sNorm))) {
-          if (s.role === 'team_leader' || s.role === 'big_leader') {
+          const isCo = s.sellMode === 'co_leader' || s.isCoLeader || s.role === 'co_leader';
+          if (s.role === 'team_leader' || s.role === 'big_leader' || isCo) {
+            const linkedGroup = Array.isArray(cachedGroups) ? cachedGroups.find((g) => {
+              if (s.teamGroup && (g.name === s.teamGroup || normalizeNameForComparison(g.name) === normalizeNameForComparison(s.teamGroup))) return true;
+              if (s.teamLeader && normalizeNameForComparison(g.leaderName) === normalizeNameForComparison(s.teamLeader)) return true;
+              return false;
+            }) : null;
+
             return {
               isLeader: true,
-              leaderName: s.name,
-              groupName: s.teamGroup || ('ក្រុម ' + s.name),
-              group: null,
+              isCoLeader: isCo,
+              leaderName: linkedGroup ? linkedGroup.leaderName : (s.teamLeader || s.name),
+              coLeaderName: isCo ? s.name : '',
+              actingLeaderName: s.name,
+              groupName: linkedGroup ? linkedGroup.name : (s.teamGroup || ('ក្រុម ' + s.name)),
+              group: linkedGroup || null,
             };
           }
         }
@@ -335,6 +404,7 @@ function getMemberTeamInfo(sellerName) {
           if (s.teamLeader || s.teamGroup) {
             return {
               isLeader: false,
+              memberName: s.name,
               leaderName: s.teamLeader,
               groupName: s.teamGroup,
               sellMode: s.sellMode || 'solo',
@@ -352,29 +422,85 @@ function getCommissionMembersForLeader(leaderName) {
   if (!leaderName) return [];
   const lNorm = normalizeNameForComparison(leaderName);
 
-  // Dynamic from cachedGroups (metadata/teams)
+  // 1. Dynamic from cachedGroups (metadata/teams) - Match main leader OR co-leader
+  let foundGroup = null;
   if (Array.isArray(cachedGroups)) {
-    const foundGroup = cachedGroups.find((g) => {
+    foundGroup = cachedGroups.find((g) => {
       const lead = normalizeNameForComparison(g.leaderName);
-      return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
+      const coLead = normalizeNameForComparison(g.coLeaderName);
+      if (lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm))) return true;
+      if (coLead && (coLead === lNorm || lNorm.includes(coLead) || coLead.includes(lNorm))) return true;
+      if (Array.isArray(g.leaderNames) && g.leaderNames.some((ln) => {
+        const norm = normalizeNameForComparison(ln);
+        return norm && (norm === lNorm || lNorm.includes(norm) || norm.includes(lNorm));
+      })) return true;
+      if (Array.isArray(g.members) && g.members.some((m) => {
+        const isCo = typeof m === 'object' && (m.mode === 'co_leader' || m.sellMode === 'co_leader' || m.isCoLeader);
+        const mNorm = normalizeNameForComparison(typeof m === 'object' ? m.name : m);
+        return isCo && mNorm && (mNorm === lNorm || lNorm.includes(mNorm) || mNorm.includes(lNorm));
+      })) return true;
+      return false;
     });
+  }
 
-    if (foundGroup && Array.isArray(foundGroup.members) && foundGroup.members.length > 0) {
-      const nonLeaderMembers = foundGroup.members
-        .map((m) => (typeof m === 'object' ? m : { name: m, mode: 'solo', sellMode: 'solo' }))
-        .filter((m) => {
-          const mNorm = normalizeNameForComparison(m.name);
-          return mNorm && mNorm !== lNorm && !lNorm.includes(mNorm);
-        });
-
-      // Filter members who sell with the leader or are salaried staff
-      const eligible = nonLeaderMembers.filter(
-        (m) => m.sellMode === 'with_leader' || m.mode === 'with_leader' || m.sellMode === 'staff' || m.mode === 'staff'
-      );
-      const target = eligible.length > 0 ? eligible : nonLeaderMembers;
-      const result = target.map((m) => (typeof m === 'object' ? m.name : m)).filter(Boolean);
-      if (result.length > 0) return result;
+  // 2. If not found directly, check if leaderName is in cachedSellers and links to a group
+  if (!foundGroup && Array.isArray(cachedSellers) && Array.isArray(cachedGroups)) {
+    const sObj = cachedSellers.find((s) => {
+      const sNorm = normalizeNameForComparison(typeof s === 'object' ? s.name : s);
+      return sNorm && (sNorm === lNorm || lNorm.includes(sNorm) || sNorm.includes(lNorm));
+    });
+    if (sObj && typeof sObj === 'object') {
+      const gName = sObj.teamGroup;
+      if (gName) {
+        foundGroup = cachedGroups.find((g) => g.name === gName || normalizeNameForComparison(g.name) === normalizeNameForComparison(gName));
+      }
     }
+  }
+
+  const memberSet = new Set();
+  const leadNorm = normalizeNameForComparison(foundGroup?.leaderName || '');
+  const coLeadNorm = normalizeNameForComparison(foundGroup?.coLeaderName || '');
+
+  // Collect from foundGroup.members
+  if (foundGroup && Array.isArray(foundGroup.members)) {
+    foundGroup.members.forEach((m) => {
+      const mName = typeof m === 'object' ? m.name : m;
+      const mNorm = normalizeNameForComparison(mName);
+      if (!mName || !mNorm) return;
+
+      // Exclude caller themselves
+      if (mNorm === lNorm) return;
+
+      // Exclude main leader or co-leader from being picked as child commission member
+      const isCo = typeof m === 'object' && (m.mode === 'co_leader' || m.sellMode === 'co_leader' || m.isCoLeader);
+      if (mNorm === leadNorm || isCo) return;
+
+      memberSet.add(mName);
+    });
+  }
+
+  // Collect from cachedSellers linked to this group
+  if (foundGroup && Array.isArray(cachedSellers)) {
+    cachedSellers.forEach((s) => {
+      if (typeof s !== 'object' || !s || !s.name) return;
+      const sName = s.name;
+      const sNorm = normalizeNameForComparison(sName);
+      if (!sName || !sNorm) return;
+      if (sNorm === lNorm || sNorm === leadNorm || sNorm === coLeadNorm) return;
+      if (s.sellMode === 'co_leader' || s.isCoLeader || s.role === 'team_leader' || s.role === 'big_leader') return;
+
+      const inGroup = s.teamGroup === foundGroup.name ||
+        (Array.isArray(s.teamGroups) && s.teamGroups.includes(foundGroup.name)) ||
+        (s.teamLeader && normalizeNameForComparison(s.teamLeader) === leadNorm);
+
+      if (inGroup) {
+        memberSet.add(sName);
+      }
+    });
+  }
+
+  if (memberSet.size > 0) {
+    return Array.from(memberSet);
   }
 
   // Fallback: check cachedSellers (metadata/sellers)
@@ -386,7 +512,7 @@ function getCommissionMembersForLeader(leaderName) {
         return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
       })
       .map((s) => s.name);
-    if (members.length > 0) return members;
+    if (members.length > 0) return Array.from(new Set(members));
   }
 
   return [];
@@ -534,7 +660,7 @@ function calculateOrderCommission(orderData) {
   return isCod ? 4.5 : 5;
 }
 
-function getCommissionMemberKeyboard(orderId, memberList) {
+function getCommissionMemberKeyboard(orderId, memberList, isCoLeader = false) {
   const rows = [];
   const list = Array.isArray(memberList) ? memberList : [];
 
@@ -557,7 +683,7 @@ function getCommissionMemberKeyboard(orderId, memberList) {
 
   rows.push([
     {
-      text: '👑 មេក្រុមលក់ផ្ទាល់ខ្លួន',
+      text: isCoLeader ? '👑 Co-Leader លក់ផ្ទាល់ខ្លួន' : '👑 មេក្រុមលក់ផ្ទាល់ខ្លួន',
       callback_data: 'comm:' + orderId + ':self',
     },
   ]);
@@ -819,10 +945,14 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       completeOrder.isCommissionSale = false;
 
       if (leaderInfo) {
-        completeOrder.sellerName = leaderInfo.leaderName;
-        completeOrder.actualSeller = leaderInfo.leaderName;
+        completeOrder.sellerName = leaderInfo.actingLeaderName || canonicalSeller;
+        completeOrder.actualSeller = leaderInfo.actingLeaderName || canonicalSeller;
         completeOrder.teamLeader = leaderInfo.leaderName;
         completeOrder.teamGroup = leaderInfo.groupName;
+        if (leaderInfo.isCoLeader) {
+          completeOrder.coLeaderName = leaderInfo.coLeaderName || canonicalSeller;
+          completeOrder.isCoLeaderOrder = true;
+        }
       } else if (memberInfo) {
         const memberCanonical = memberInfo.memberName || canonicalSeller;
         completeOrder.sellerName = memberCanonical;
@@ -842,11 +972,12 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       const productTypeLine = completeOrder.productType ? '\n🏷️ ប្រភេទ: ' + completeOrder.productType : '';
 
       if (leaderInfo) {
-        const commMembers = getCommissionMembersForLeader(leaderInfo.leaderName);
+        const commMembers = getCommissionMembersForLeader(leaderInfo.actingLeaderName || leaderInfo.leaderName);
         if (commMembers.length > 0) {
-          const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (មេក្រុម): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ (ឬមេក្រុមផ្ទាល់)៖';
+          const leaderRoleLabel = leaderInfo.isCoLeader ? 'Co-Leader' : 'មេក្រុម';
+          const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + advisorLine + productTypeLine + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (' + leaderRoleLabel + '): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ (ឬ' + leaderRoleLabel + 'ផ្ទាល់)៖';
 
-          console.log('[WeCan Bot Step 1: Member Pick] #' + orderNumber + ' for leader: ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
+          console.log('[WeCan Bot Step 1: Member Pick] #' + orderNumber + ' for ' + leaderRoleLabel + ': ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
 
           if (editMessageId) {
             try {
@@ -854,7 +985,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
                 chat_id: chatId,
                 message_id: editMessageId,
                 reply_markup: {
-                  inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers),
+                  inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers, leaderInfo.isCoLeader),
                 },
               });
               return;
@@ -864,7 +995,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           return bot.sendMessage(chatId, promptMsg, {
             reply_to_message_id: replyToMsgId,
             reply_markup: {
-              inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers),
+              inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers, leaderInfo.isCoLeader),
             },
           });
         }
@@ -887,7 +1018,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
-🏢 ក្រុម: ${completeOrder.teamLeader}
+🏢 ក្រុម: ${completeOrder.teamGroup || completeOrder.teamLeader}
 🧪 ចំនួនលក់: ${unitsDetail}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
@@ -1106,18 +1237,37 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         });
         completeOrder.sellerName = sName;
 
+        const leaderInfo = getTeamLeaderInfo(sName);
+        if (leaderInfo) {
+          completeOrder.sellerName = leaderInfo.actingLeaderName || sName;
+          completeOrder.actualSeller = leaderInfo.actingLeaderName || sName;
+          completeOrder.teamLeader = leaderInfo.leaderName;
+          completeOrder.teamGroup = leaderInfo.groupName;
+          if (leaderInfo.isCoLeader) {
+            completeOrder.coLeaderName = leaderInfo.coLeaderName || sName;
+            completeOrder.isCoLeaderOrder = true;
+          }
+        }
+
         // Save draft in pending_orders (DO NOT SAVE TO orders COLLECTION YET!)
         await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
 
-        const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
-          ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
-          : completeOrder.companyDeliveryType === 'jt'
-          ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
-          : completeOrder.companyDeliveryType === 'cod'
-          ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
-          : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
-
         const pkgTitle = formatPackageTitle(completeOrder);
+
+        if (leaderInfo) {
+          const commMembers = getCommissionMembersForLeader(leaderInfo.actingLeaderName || leaderInfo.leaderName);
+          if (commMembers.length > 0) {
+            const leaderRoleLabel = leaderInfo.isCoLeader ? 'Co-Leader' : 'មេក្រុម';
+            const promptMsg = '📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#' + orderNumber + ')\n-----------------------------------------\n📞 ភ្ញៀវ: ' + completeOrder.customerPhone + '\n📍 ទីតាំង: ' + completeOrder.destination + ', ខេត្ត' + pending.parsed.provinceKm + '\n🛍️ ឈុត: ' + pkgTitle + ' ($' + completeOrder.price + ')\n🏢 ម្ចាស់ Order (' + leaderRoleLabel + '): ' + completeOrder.sellerName + '\n-----------------------------------------\n👉 សូមជ្រើសរើសកូនក្រុមដែលជាអ្នកលក់យកកម្រៃលើ Order នេះ (ឬ' + leaderRoleLabel + 'ផ្ទាល់)៖';
+            return bot.editMessageText(promptMsg, {
+              chat_id: chatId,
+              message_id: messageId,
+              reply_markup: {
+                inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers, leaderInfo.isCoLeader),
+              },
+            });
+          }
+        }
 
         const unitsDetail = formatUnitsDetail(completeOrder);
 
@@ -1128,7 +1278,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 🛍️ ឈុត: ${pkgTitle} ($${completeOrder.price})
 🚚 សេវាដឹក: ${deliveryTypeBadge}
 👨‍💼 អ្នកលក់: ${completeOrder.sellerName}
-🏢 ក្រុម: ${completeOrder.teamLeader}
+🏢 ក្រុម: ${completeOrder.teamGroup || completeOrder.teamLeader}
 🧪 ចំនួនលក់: ${unitsDetail}
 📅 កាលបរិច្ឆេទ: ${completeOrder.date}
 -----------------------------------------
@@ -1177,14 +1327,17 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         let commAmount = 0;
         let isCommission = false;
 
+        const isCoLeader = orderData.isCoLeaderOrder || (orderData.coLeaderName && orderData.sellerName === orderData.coLeaderName);
+        const ownerRoleTitle = isCoLeader ? 'Co-Leader' : 'មេក្រុម';
+
         if (targetIdx === 'self') {
-          selectedMember = orderData.sellerName || orderData.teamLeader || 'មេក្រុម';
+          selectedMember = orderData.sellerName || orderData.coLeaderName || orderData.teamLeader || 'មេក្រុម';
           commAmount = 0;
           isCommission = false;
-          await bot.answerCallbackQuery(queryMsg.id, { text: '✅ មេក្រុមលក់ផ្ទាល់ខ្លួន' });
+          await bot.answerCallbackQuery(queryMsg.id, { text: `✅ ${selectedMember} (${ownerRoleTitle} លក់ផ្ទាល់ខ្លួន)` });
         } else {
           const idx = parseInt(targetIdx, 10);
-          const members = getCommissionMembersForLeader(orderData.sellerName || orderData.teamLeader);
+          const members = getCommissionMembersForLeader(orderData.sellerName || orderData.coLeaderName || orderData.teamLeader);
           selectedMember = members[idx] || 'កូនក្រុម';
 
           if (isStaffMember(selectedMember)) {
@@ -1231,11 +1384,13 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const advisorLine = updatedOrder.advisorPhone ? `\n☎️ អ្នកប្រឹក្សា: ${updatedOrder.advisorPhone}` : '';
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
+        const isCoLeaderUpdated = updatedOrder.isCoLeaderOrder || (updatedOrder.coLeaderName && updatedOrder.sellerName === updatedOrder.coLeaderName);
+        const ownerRoleLabel = isCoLeaderUpdated ? 'Co-Leader' : 'មេក្រុម';
         const sellerLine = isCommission
-          ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${selectedMember}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${commAmount}.00 💸`
+          ? `\n🏢 ម្ចាស់ Order (${ownerRoleLabel}): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${selectedMember}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${commAmount}.00 💸`
           : (isStaff
-              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${selectedMember} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
-              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (លក់ផ្ទាល់ខ្លួន)`);
+              ? `\n🏢 ម្ចាស់ Order (${ownerRoleLabel}): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${selectedMember} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName} (${ownerRoleLabel} លក់ផ្ទាល់ខ្លួន)`);
 
         const promptMsg = `📦 ទទួលបានការកុម្ម៉ង់ថ្មី! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
@@ -1243,7 +1398,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
 🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
 🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
-🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
+🏢 ក្រុម: ${updatedOrder.teamGroup || updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
 -----------------------------------------
@@ -1336,13 +1491,15 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
 
         const isStaff = isStaffMember(updatedOrder.commissionSeller || updatedOrder.actualSeller);
+        const isCoLeaderFinal = updatedOrder.isCoLeaderOrder || (updatedOrder.coLeaderName && updatedOrder.sellerName === updatedOrder.coLeaderName);
+        const ownerRoleFinal = isCoLeaderFinal ? 'Co-Leader' : 'មេក្រុម';
         const sellerLine = updatedOrder.commissionSeller
           ? (isStaff
-              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.commissionSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
-              : `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`)
+              ? `\n🏢 ម្ចាស់ Order (${ownerRoleFinal}): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.commissionSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n🏢 ម្ចាស់ Order (${ownerRoleFinal}): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`)
           : (isStaff && updatedOrder.actualSeller && updatedOrder.actualSeller !== updatedOrder.sellerName
-              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.actualSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
-              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}`);
+              ? `\n🏢 ម្ចាស់ Order (${ownerRoleFinal}): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.actualSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'} (${ownerRoleFinal} លក់ផ្ទាល់ខ្លួន)`);
 
         const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
@@ -1350,7 +1507,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
 🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
 🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
-🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
+🏢 ក្រុម: ${updatedOrder.teamGroup || updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
 📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
@@ -1507,13 +1664,15 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const productTypeLine = updatedOrder.productType ? `\n🏷️ ប្រភេទ: ${updatedOrder.productType}` : '';
 
         const isStaff = isStaffMember(updatedOrder.commissionSeller || updatedOrder.actualSeller);
+        const isCoLeaderFinal = updatedOrder.isCoLeaderOrder || (updatedOrder.coLeaderName && updatedOrder.sellerName === updatedOrder.coLeaderName);
+        const ownerRoleFinal = isCoLeaderFinal ? 'Co-Leader' : 'មេក្រុម';
         const sellerLine = updatedOrder.commissionSeller
           ? (isStaff
-              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.commissionSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
-              : `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`)
+              ? `\n🏢 ម្ចាស់ Order (${ownerRoleFinal}): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.commissionSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n🏢 ម្ចាស់ Order (${ownerRoleFinal}): ${updatedOrder.sellerName}\n👨‍💼 អ្នកលក់ពិតប្រាកដ: ${updatedOrder.commissionSeller}\n💰 ប្រាក់កម្រៃអ្នកលក់: +$${updatedOrder.sellerCommission || 0}.00 💸`)
           : (isStaff && updatedOrder.actualSeller && updatedOrder.actualSeller !== updatedOrder.sellerName
-              ? `\n🏢 ម្ចាស់ Order (មេក្រុម): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.actualSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
-              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'}`);
+              ? `\n🏢 ម្ចាស់ Order (${ownerRoleFinal}): ${updatedOrder.sellerName}\n💼 អ្នកលក់: ${updatedOrder.actualSeller} (បុគ្គលិកប្រាក់ខែ - គ្មានកម្រៃ)`
+              : `\n👑 អ្នកលក់: ${updatedOrder.sellerName || 'N/A'} (${ownerRoleFinal} លក់ផ្ទាល់ខ្លួន)`);
 
         const updatedSuccessMsg = `✅ បានកត់ត្រាការកុម្ម៉ង់ដោយជោគជ័យ! (#${updatedOrder.orderNumber || ''})
 -----------------------------------------
@@ -1521,7 +1680,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 📍 ទីតាំង: ${updatedOrder.destination || 'N/A'}, ខេត្ត${updatedOrder.provinceKm || ''}
 🛍️ ឈុត: ${pkgTitle} ($${updatedOrder.price || 0})
 🚚 សេវាដឹក: ${deliveryTypeBadge}${sellerLine}
-🏢 ក្រុម: ${updatedOrder.teamLeader || 'ក្រុម'}
+🏢 ក្រុម: ${updatedOrder.teamGroup || updatedOrder.teamLeader || 'ក្រុម'}
 🧪 ចំនួនលក់: ${unitsDetail}
 💳 ស្ថានភាពទូទាត់: ${payBadge}
 📅 កាលបរិច្ឆេទ: ${updatedOrder.date || ''}
@@ -1622,4 +1781,9 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
   return bot;
 }
 
-module.exports = { startWeCanBot };
+module.exports = {
+  startWeCanBot,
+  getTeamLeaderInfo,
+  getCommissionMembersForLeader,
+  getCommissionMemberKeyboard,
+};
