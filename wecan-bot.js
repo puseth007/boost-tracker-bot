@@ -418,6 +418,21 @@ function getMemberTeamInfo(sellerName) {
   return null;
 }
 
+function isExcludedTelegramSeller(name = '') {
+  if (!name) return true;
+  const clean = String(name)
+    .replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D\-_:.]+/gu, '')
+    .toLowerCase();
+  return (
+    clean === 'puseth' ||
+    clean === 'seth' ||
+    clean === 'admin' ||
+    clean.includes('puseth') ||
+    clean.includes('ពូសេដ្ឋ') ||
+    clean.includes('ពូសេត')
+  );
+}
+
 function getCommissionMembersForLeader(leaderName) {
   if (!leaderName) return [];
   const lNorm = normalizeNameForComparison(leaderName);
@@ -475,6 +490,9 @@ function getCommissionMembersForLeader(leaderName) {
       const isCo = typeof m === 'object' && (m.mode === 'co_leader' || m.sellMode === 'co_leader' || m.isCoLeader);
       if (mNorm === leadNorm || isCo) return;
 
+      // Exclude Pu Seth / admin from Telegram seller selection
+      if (isExcludedTelegramSeller(mName)) return;
+
       memberSet.add(mName);
     });
   }
@@ -488,6 +506,7 @@ function getCommissionMembersForLeader(leaderName) {
       if (!sName || !sNorm) return;
       if (sNorm === lNorm || sNorm === leadNorm || sNorm === coLeadNorm) return;
       if (s.sellMode === 'co_leader' || s.isCoLeader || s.role === 'team_leader' || s.role === 'big_leader') return;
+      if (isExcludedTelegramSeller(sName)) return;
 
       const inGroup = s.teamGroup === foundGroup.name ||
         (Array.isArray(s.teamGroups) && s.teamGroups.includes(foundGroup.name)) ||
@@ -500,7 +519,7 @@ function getCommissionMembersForLeader(leaderName) {
   }
 
   if (memberSet.size > 0) {
-    return Array.from(memberSet);
+    return Array.from(memberSet).filter((name) => !isExcludedTelegramSeller(name));
   }
 
   // Fallback: check cachedSellers (metadata/sellers)
@@ -511,7 +530,8 @@ function getCommissionMembersForLeader(leaderName) {
         const lead = normalizeNameForComparison(s.teamLeader);
         return lead && (lead === lNorm || lNorm.includes(lead) || lead.includes(lNorm));
       })
-      .map((s) => s.name);
+      .map((s) => s.name)
+      .filter((name) => !isExcludedTelegramSeller(name));
     if (members.length > 0) return Array.from(new Set(members));
   }
 
@@ -662,7 +682,9 @@ function calculateOrderCommission(orderData) {
 
 function getCommissionMemberKeyboard(orderId, memberList, isCoLeader = false) {
   const rows = [];
-  const list = Array.isArray(memberList) ? memberList : [];
+  const list = (Array.isArray(memberList) ? memberList : []).filter(
+    (m) => !isExcludedTelegramSeller(typeof m === 'object' ? m?.name : m)
+  );
 
   for (let i = 0; i < list.length; i += 2) {
     const row = [];
@@ -1059,7 +1081,10 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
       const keyboardRows = [];
       let currentRow = [];
 
-      cachedSellers.slice(0, 14).forEach((s, idx) => {
+      cachedSellers
+        .filter((s) => !isExcludedTelegramSeller(typeof s === 'string' ? s : s?.name))
+        .slice(0, 14)
+        .forEach((s, idx) => {
         const sName = typeof s === 'string' ? s : s.name;
         currentRow.push({
           text: `💼 ${sName}`,
