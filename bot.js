@@ -1076,18 +1076,43 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       ],
     };
 
+    const isExcludedSingEuSeller = (name) => {
+      if (!name) return true;
+      const lower = String(name).trim().toLowerCase().replace(/\s+/g, '');
+      const khmerNorm = typeof normalizeKhmer === 'function' ? normalizeKhmer(name) : lower;
+      return (
+        lower === 'puseth' ||
+        lower === 'pu-seth' ||
+        lower === 'seth' ||
+        lower === 'admin' ||
+        khmerNorm === 'ពូសេដ្ឋ' ||
+        khmerNorm === 'ពូសេត' ||
+        khmerNorm.includes('ពូសេដ្ឋ') ||
+        khmerNorm.includes('ពូសេត')
+      );
+    };
+
     const teamSingEuMembers = [
       { name: singEuGroup.leaderName || 'ស៊ីង អ៊ី', role: 'មេក្រុម', groupId: singEuGroup.id, groupName: singEuGroup.name },
-      ...(singEuGroup.members || []).map((m) => ({
-        name: m.name,
-        role: m.role || 'កូនក្រុម',
-        groupId: singEuGroup.id,
-        groupName: singEuGroup.name,
-      })),
+      ...(singEuGroup.members || [])
+        .filter((m) => !isExcludedSingEuSeller(m.name))
+        .map((m) => ({
+          name: m.name,
+          role: m.role || 'កូនក្រុម',
+          groupId: singEuGroup.id,
+          groupName: singEuGroup.name,
+        })),
     ];
 
     for (const app1Seller of cachedSellers) {
-      if (!app1Seller || !app1Seller.name || app1Seller.name === 'ទូទៅ' || app1Seller.name.includes('ស៊ីង') || app1Seller.name.includes('សុីង')) continue;
+      if (
+        !app1Seller ||
+        !app1Seller.name ||
+        app1Seller.name === 'ទូទៅ' ||
+        app1Seller.name.includes('ស៊ីង') ||
+        app1Seller.name.includes('សុីង') ||
+        isExcludedSingEuSeller(app1Seller.name)
+      ) continue;
       const cleanName = app1Seller.name.trim();
       const alreadyIn = teamSingEuMembers.some(
         (m) => normalizeKhmer(m.name) === normalizeKhmer(cleanName)
@@ -1102,10 +1127,14 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
       }
     }
 
+    const filteredSingEuMembers = teamSingEuMembers.filter(
+      (m) => !isExcludedSingEuSeller(m.name)
+    );
+
     const pendingId = `p${Date.now().toString(36)}`;
     pendingOrders.set(pendingId, {
       parsed,
-      sellers: teamSingEuMembers,
+      sellers: filteredSingEuMembers,
       chatId,
       originalMsgId: replyToMsgId,
       createdAt: Date.now(),
@@ -1118,7 +1147,7 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
     const keyboardRows = [];
     let currentRow = [];
 
-    teamSingEuMembers.forEach((seller, idx) => {
+    filteredSingEuMembers.forEach((seller, idx) => {
       const badge = seller.role === 'មេក្រុម' ? '👑' : seller.role === 'បុគ្គលិក' ? '💼' : '👤';
       currentRow.push({
         text: `${badge} ${seller.name}`,
