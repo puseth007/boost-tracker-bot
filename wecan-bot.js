@@ -810,7 +810,7 @@ function startWeCanBot() {
     },
   });
 
-  console.log('🤖 [WeCan Bot @team_wecan_bot] is RUNNING on Cloud! Target: boost-tracker-v2');
+  console.log('🤖 [WeCan Bot @team_wecan_bot] is RUNNING on Cloud! Target: we-can-team');
 
   bot.on('polling_error', (err) => {
     console.log('[WeCan Bot Polling notice]:', err.message);
