@@ -604,7 +604,8 @@ function calculateOrderCommission(orderData) {
 
   const isCod =
     orderData.companyDeliveryType === 'cod' ||
-    (orderData.deliveryMethod === 'company' && orderData.companyDeliveryType === 'cod') ||
+    orderData.companyDeliveryType === 'jt_cod' ||
+    (orderData.deliveryMethod === 'company' && (orderData.companyDeliveryType === 'cod' || orderData.companyDeliveryType === 'jt_cod')) ||
     (orderData.deliveryMethod && String(orderData.deliveryMethod).toLowerCase().includes('cod'));
 
   let resolvedPkgId = pkgId;
@@ -734,6 +735,17 @@ function sanitizeForFirestore(obj) {
 }
 
 async function saveOrderToFirestore(completeOrder) {
+  // Business Rule: For 1 tube (set_1), price is STRICTLY  or !
+  const tubes = Number(completeOrder.tubes !== undefined ? completeOrder.tubes : 0);
+  const cans = Number(completeOrder.cans !== undefined ? completeOrder.cans : 0);
+  if ((tubes === 1 && cans === 0) || completeOrder.packageId === 'set_1') {
+    completeOrder.packageId = 'set_1';
+    completeOrder.tubes = 1;
+    completeOrder.cans = 0;
+    completeOrder.price = (completeOrder.price === 15 || completeOrder.price === 60 || completeOrder.price === 60000) ? 15 : 17;
+    completeOrder.orderProfit = completeOrder.price - (completeOrder.deliveryFee || 2) - (completeOrder.productCost || 3.5);
+  }
+
   const cleanOrder = sanitizeForFirestore(completeOrder);
   await setDoc(doc(db, 'orders', completeOrder.id), cleanOrder);
 
@@ -816,6 +828,41 @@ function startWeCanBot() {
     return isoDate;
   }
   loadMetadata();
+
+  // Listen to deleted_orders to sync in-app deletions directly to Telegram messages
+  if (db) {
+    try {
+      onSnapshot(collection(db, 'deleted_orders'), (snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const data = change.doc.data();
+            const tgChatId = data.telegramChatId;
+            const tgMsgId = data.telegramMessageId;
+            if (tgChatId && tgMsgId) {
+              const deletedByName = data.deletedBy || 'Admin';
+              const ordNum = data.orderNumber || '';
+              const pkgText = data.packageName || data.productType || (data.price ? `$${data.price}` : '');
+              const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n📞 ភ្ញៀវ: ${data.customerPhone || 'N/A'}\n🛍️ ឈុត: ${pkgText} ($${data.price || 0})\n👨‍💼 អ្នកលក់: ${data.sellerName || 'N/A'}\n📅 កាលបរិច្ឆេទ: ${data.date || ''}\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់`;
+
+              bot.editMessageText(deletedNotice, {
+                chat_id: tgChatId,
+                message_id: tgMsgId,
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+                  ]
+                }
+              }).catch(() => {});
+            }
+          }
+        });
+      }, (err) => {
+        console.log('[WeCan Bot] deleted_orders listener notice:', err.message);
+      });
+    } catch (e) {
+      console.log('[WeCan Bot] Error setting deleted_orders listener:', e.message);
+    }
+  }
 
   async function getNextOrderNumber() {
     if (!db) return Math.floor(Math.random() * 900) + 100;
@@ -1001,6 +1048,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
           console.log('[WeCan Bot Step 1: Member Pick] #' + orderNumber + ' for ' + leaderRoleLabel + ': ' + completeOrder.sellerName + ' (' + commMembers.length + ' members)');
 
+          let sentMsgId = editMessageId;
           if (editMessageId) {
             try {
               await bot.editMessageText(promptMsg, {
@@ -1010,26 +1058,34 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
                   inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers, leaderInfo.isCoLeader),
                 },
               });
-              return;
             } catch (e) {}
+          } else {
+            const sentMsg = await bot.sendMessage(chatId, promptMsg, {
+              reply_to_message_id: replyToMsgId,
+              reply_markup: {
+                inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers, leaderInfo.isCoLeader),
+              },
+            });
+            sentMsgId = sentMsg ? sentMsg.message_id : null;
           }
 
-          return bot.sendMessage(chatId, promptMsg, {
-            reply_to_message_id: replyToMsgId,
-            reply_markup: {
-              inline_keyboard: getCommissionMemberKeyboard(completeOrder.id, commMembers, leaderInfo.isCoLeader),
-            },
-          });
+          completeOrder.telegramChatId = chatId;
+          completeOrder.telegramMessageId = sentMsgId;
+          completeOrder.telegramBotToken = token;
+          await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
+          return;
         }
       }
 
       const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
         ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+        : completeOrder.companyDeliveryType === 'jt_cod'
+        ? `ក្រុមហ៊ុន J&T (COD) ($${completeOrder.deliveryFee})`
         : completeOrder.companyDeliveryType === 'jt'
         ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
         : completeOrder.companyDeliveryType === 'cod'
-        ? `ក្រុមហ៊ុន COD ($${completeOrder.deliveryFee})`
-        : `ក្រុមហ៊ុន ធម្មតា ($${completeOrder.deliveryFee})`;
+        ? `ក្រុមហ៊ុន Vet COD ($${completeOrder.deliveryFee})`
+        : `ក្រុមហ៊ុន Vet ($${completeOrder.deliveryFee})`;
 
       const unitsDetail = formatUnitsDetail(completeOrder);
 
@@ -1048,6 +1104,7 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
       console.log(`[WeCan Bot Step 1: Payment Prompt for Member] #${orderNumber} (${completeOrder.sellerName})`);
 
+      let sentMsgId = editMessageId;
       if (editMessageId) {
         try {
           await bot.editMessageText(promptMsg, {
@@ -1057,16 +1114,25 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
               inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
             },
           });
+          completeOrder.telegramChatId = chatId;
+          completeOrder.telegramMessageId = editMessageId;
+          completeOrder.telegramBotToken = token;
+          await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
           return;
         } catch (e) {}
       }
 
-      return bot.sendMessage(chatId, promptMsg, {
+      const sentMsg = await bot.sendMessage(chatId, promptMsg, {
         reply_to_message_id: replyToMsgId,
         reply_markup: {
           inline_keyboard: getInitialPaymentKeyboard(completeOrder.id, completeOrder.price),
         },
       });
+      completeOrder.telegramChatId = chatId;
+      completeOrder.telegramMessageId = sentMsg ? sentMsg.message_id : null;
+      completeOrder.telegramBotToken = token;
+      await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
+      return;
     } else {
       const pendingId = `p${Date.now().toString(36)}`;
       pendingOrders.set(pendingId, {
@@ -1274,6 +1340,10 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
           }
         }
 
+        completeOrder.telegramChatId = chatId;
+        completeOrder.telegramMessageId = messageId;
+        completeOrder.telegramBotToken = token;
+
         // Save draft in pending_orders (DO NOT SAVE TO orders COLLECTION YET!)
         await setDoc(doc(db, 'pending_orders', completeOrder.id), sanitizeForFirestore(completeOrder));
 
@@ -1380,6 +1450,9 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const updatedOrder = {
           ...orderData,
+          telegramChatId: chatId || orderData.telegramChatId,
+          telegramMessageId: messageId || orderData.telegramMessageId,
+          telegramBotToken: token || orderData.telegramBotToken,
           actualSeller: selectedMember,
           commissionSeller: isCommission ? selectedMember : null,
           sellerCommission: commAmount,
@@ -1397,11 +1470,13 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'jt_cod'
+          ? `ក្រុមហ៊ុន J&T (COD) ($${updatedOrder.deliveryFee || 3})`
           : updatedOrder.companyDeliveryType === 'jt'
-          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2})`
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2.5})`
           : updatedOrder.companyDeliveryType === 'cod'
-          ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
-          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+          ? `ក្រុមហ៊ុន Vet COD ($${updatedOrder.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន Vet ($${updatedOrder.deliveryFee || 2})`;
 
         const pkgTitle = formatPackageTitle(updatedOrder);
 
@@ -1470,8 +1545,29 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         }
 
         if (!orderSnap.exists()) {
+          const delSnap = await getDoc(doc(db, 'deleted_orders', orderId)).catch(() => null);
+          if (delSnap && delSnap.exists()) {
+            const delData = delSnap.data();
+            const deletedByName = delData.deletedBy || 'Admin';
+            await bot.answerCallbackQuery(queryMsg.id, {
+              text: `🚫 ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName} រួចហើយ!`,
+              show_alert: true,
+            });
+            const ordNum = delData.orderNumber || '';
+            const pkgText = delData.packageName || delData.productType || (delData.price ? `$${delData.price}` : '');
+            const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n📞 ភ្ញៀវ: ${delData.customerPhone || 'N/A'}\n🛍️ ឈុត: ${pkgText} ($${delData.price || 0})\n👨‍💼 អ្នកលក់: ${delData.sellerName || 'N/A'}\n📅 កាលបរិច្ឆេទ: ${delData.date || ''}\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់`;
+            return bot.editMessageText(deletedNotice, {
+              chat_id: chatId,
+              message_id: messageId,
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+                ]
+              }
+            }).catch(() => {});
+          }
           return bot.answerCallbackQuery(queryMsg.id, {
-            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ ឬផុតកំណត់!',
+            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ ឬត្រូវបានលុប!',
             show_alert: true,
           });
         }
@@ -1479,6 +1575,9 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const existingOrder = orderSnap.data();
         const updatedOrder = {
           ...existingOrder,
+          telegramChatId: chatId || existingOrder.telegramChatId,
+          telegramMessageId: messageId || existingOrder.telegramMessageId,
+          telegramBotToken: token || existingOrder.telegramBotToken,
           paymentStatus: targetStatus,
           updatedAt: new Date().toISOString(),
         };
@@ -1502,11 +1601,13 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'jt_cod'
+          ? `ក្រុមហ៊ុន J&T (COD) ($${updatedOrder.deliveryFee || 3})`
           : updatedOrder.companyDeliveryType === 'jt'
-          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2})`
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2.5})`
           : updatedOrder.companyDeliveryType === 'cod'
-          ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
-          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+          ? `ក្រុមហ៊ុន Vet COD ($${updatedOrder.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន Vet ($${updatedOrder.deliveryFee || 2})`;
 
         const pkgTitle = formatPackageTitle(updatedOrder);
 
@@ -1574,8 +1675,25 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const orderRef = doc(db, 'orders', orderId);
         const orderSnap = await getDoc(orderRef);
         if (!orderSnap.exists()) {
+          // Check if deleted in App
+          const deletedSnap = await getDoc(doc(db, 'deleted_orders', orderId)).catch(() => null);
+          const delData = deletedSnap?.exists() ? deletedSnap.data() : null;
+          const deletedByName = delData?.deletedBy || 'Admin';
+          const ordNum = delData?.orderNumber || '';
+          const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់ មិនអាចកែប្រែស្ថានភាពបានទៀតទេ!`;
+
+          await bot.editMessageText(deletedNotice, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+              ]
+            }
+          }).catch(() => {});
+
           return bot.answerCallbackQuery(queryMsg.id, {
-            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ!',
+            text: `⚠️ ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName} រួចហើយ!`,
             show_alert: true,
           });
         }
@@ -1649,8 +1767,29 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const orderSnap = await getDoc(orderRef);
 
         if (!orderSnap.exists()) {
+          const delSnap = await getDoc(doc(db, 'deleted_orders', orderId)).catch(() => null);
+          if (delSnap && delSnap.exists()) {
+            const delData = delSnap.data();
+            const deletedByName = delData.deletedBy || 'Admin';
+            await bot.answerCallbackQuery(queryMsg.id, {
+              text: `🚫 ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName} រួចហើយ!`,
+              show_alert: true,
+            });
+            const ordNum = delData.orderNumber || '';
+            const pkgText = delData.packageName || delData.productType || (delData.price ? `$${delData.price}` : '');
+            const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n📞 ភ្ញៀវ: ${delData.customerPhone || 'N/A'}\n🛍️ ឈុត: ${pkgText} ($${delData.price || 0})\n👨‍💼 អ្នកលក់: ${delData.sellerName || 'N/A'}\n📅 កាលបរិច្ឆេទ: ${delData.date || ''}\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់`;
+            return bot.editMessageText(deletedNotice, {
+              chat_id: chatId,
+              message_id: messageId,
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+                ]
+              }
+            }).catch(() => {});
+          }
           return bot.answerCallbackQuery(queryMsg.id, {
-            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ!',
+            text: 'រកមិនឃើញការកុម្ម៉ង់នេះក្នុងប្រព័ន្ធទេ ឬត្រូវបានលុប!',
             show_alert: true,
           });
         }
@@ -1658,6 +1797,9 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
         const existingOrder = orderSnap.data();
         const updatedOrder = {
           ...existingOrder,
+          telegramChatId: chatId || existingOrder.telegramChatId,
+          telegramMessageId: messageId || existingOrder.telegramMessageId,
+          telegramBotToken: token || existingOrder.telegramBotToken,
           paymentStatus: newStatus,
           updatedAt: new Date().toISOString(),
         };
@@ -1675,11 +1817,13 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
 
         const deliveryTypeBadge = updatedOrder.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${updatedOrder.deliveryFee || 2})`
+          : updatedOrder.companyDeliveryType === 'jt_cod'
+          ? `ក្រុមហ៊ុន J&T (COD) ($${updatedOrder.deliveryFee || 3})`
           : updatedOrder.companyDeliveryType === 'jt'
-          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2})`
+          ? `ក្រុមហ៊ុន J&T ($${updatedOrder.deliveryFee || 2.5})`
           : updatedOrder.companyDeliveryType === 'cod'
-          ? `ក្រុមហ៊ុន COD ($${updatedOrder.deliveryFee || 3})`
-          : `ក្រុមហ៊ុន ធម្មតា ($${updatedOrder.deliveryFee || 2})`;
+          ? `ក្រុមហ៊ុន Vet COD ($${updatedOrder.deliveryFee || 3})`
+          : `ក្រុមហ៊ុន Vet ($${updatedOrder.deliveryFee || 2})`;
 
         const pkgTitle = formatPackageTitle(updatedOrder);
 
@@ -1733,6 +1877,34 @@ Bot នឹងចាប់យក Order ដោយស្វ័យប្រវត្
     // Cancel order request -> Ask confirmation first
     if (data.startsWith('tgcancel:') && !data.startsWith('tgcancel_confirm:')) {
       const orderId = data.replace('tgcancel:', '');
+
+      if (db) {
+        const orderRef = doc(db, 'orders', orderId);
+        const orderSnap = await getDoc(orderRef).catch(() => null);
+        if (orderSnap && !orderSnap.exists()) {
+          const deletedSnap = await getDoc(doc(db, 'deleted_orders', orderId)).catch(() => null);
+          const delData = deletedSnap?.exists() ? deletedSnap.data() : null;
+          const deletedByName = delData?.deletedBy || 'Admin';
+          const ordNum = delData?.orderNumber || '';
+          const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់!`;
+
+          await bot.editMessageText(deletedNotice, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+              ]
+            }
+          }).catch(() => {});
+
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: `⚠️ ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName} រួចហើយ!`,
+            show_alert: true,
+          });
+        }
+      }
+
       await bot.answerCallbackQuery(queryMsg.id, {
         text: '⚠️ សូមចុចបញ្ជាក់ការបោះបង់ខាងក្រោម 👇',
       });

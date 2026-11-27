@@ -66,19 +66,6 @@ const SELLER_COMMISSION_RATES = {
   },
 };
 
-// Check if raw name matches Sing Eu (Team Leader)
-function isSingEuLeader(name = '') {
-  if (!name) return false;
-  const clean = String(name).replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
-  return (
-    clean.includes('ស៊ីង') ||
-    clean.includes('សុីង') ||
-    clean.includes('ស៊ឹង') ||
-    clean.includes('សុឺង') ||
-    clean.includes('sing')
-  );
-}
-
 // Normalize Seller Names (Standardizing Team Leaders)
 function normalizeSellerName(name) {
   if (!name) return 'ទូទៅ';
@@ -347,27 +334,56 @@ function parseOrderText(text) {
       }
     }
 
+    const cleanRielPrice = normPrice.replace(/[,]/g, '').replace(/៛|រៀល/g, '');
+
     if (!parsedPrice) {
-      const dollarMatch = normPrice.match(/(\d+)\s*\$|\$\s*(\d+)/);
+      const dollarMatch = cleanRielPrice.match(/(\d+)\s*\$|\$\s*(\d+)/);
       if (dollarMatch) {
-        parsedPrice = parseFloat(dollarMatch[1] || dollarMatch[2]);
+        const dVal = parseFloat(dollarMatch[1] || dollarMatch[2]);
+        if (dVal === 68 || dVal === 68000) parsedPrice = 17;
+        else if (dVal === 60 || dVal === 60000) parsedPrice = 15;
+        else parsedPrice = dVal;
       }
     }
 
     if (!parsedPrice) {
-      const rielMatch = normPrice.match(/(\d{4,6})/);
+      const poanMatch = cleanRielPrice.match(/([\d\.]+)\s*(?:ពាន់|k\b|k)/i);
+      if (poanMatch) {
+        const poanVal = parseFloat(poanMatch[1]);
+        if (poanVal === 68 || poanVal === 68000) parsedPrice = 17;
+        else if (poanVal === 60 || poanVal === 60000) parsedPrice = 15;
+        else if (poanVal === 120 || poanVal === 120000) parsedPrice = 30;
+        else if (poanVal === 200 || poanVal === 200000) parsedPrice = 50;
+        else if (poanVal === 280 || poanVal === 280000) parsedPrice = 70;
+        else parsedPrice = Math.round((poanVal * 1000) / 4000);
+      }
+    }
+
+    if (!parsedPrice) {
+      const rielMatch = cleanRielPrice.match(/(\d{4,6})/);
       if (rielMatch) {
         const riels = parseInt(rielMatch[1], 10);
         if (riels >= 10000) {
-          parsedPrice = Math.round(riels / 4000);
+          if (riels === 68000) parsedPrice = 17;
+          else if (riels === 60000) parsedPrice = 15;
+          else if (riels === 120000) parsedPrice = 30;
+          else if (riels === 200000) parsedPrice = 50;
+          else if (riels === 280000) parsedPrice = 70;
+          else parsedPrice = Math.round(riels / 4000);
         }
       }
     }
 
     if (!parsedPrice) {
-      const directMatch = normPrice.match(/(?:^|[^\d])(\d{1,3})(?:$|[^\d])/);
+      const directMatch = cleanRielPrice.match(/(?:^|[^\d])(\d{1,6})(?:$|[^\d])/);
       if (directMatch) {
-        parsedPrice = parseFloat(directMatch[1]);
+        const val = parseFloat(directMatch[1]);
+        if (val === 68 || val === 68000) parsedPrice = 17;
+        else if (val === 60 || val === 60000) parsedPrice = 15;
+        else if (val === 120 || val === 120000) parsedPrice = 30;
+        else if (val === 200 || val === 200000) parsedPrice = 50;
+        else if (val === 280 || val === 280000) parsedPrice = 70;
+        else parsedPrice = val;
       }
     }
   }
@@ -497,8 +513,17 @@ function parseOrderText(text) {
     };
   }
 
-  // Apply parsed price if valid and positive
-  if (parsedPrice && parsedPrice > 0) {
+  // Apply parsed price or package rules
+  if (selectedPkg.id === 'set_1' || (selectedPkg.tubes === 1 && (!selectedPkg.cans || selectedPkg.cans === 0))) {
+    selectedPkg = {
+      ...selectedPkg,
+      id: 'set_1',
+      tubes: 1,
+      cans: 0,
+      nameKm: 'ឈុត ១ ទីប',
+      price: (parsedPrice === 15 || parsedPrice === 60) ? 15 : 17,
+    };
+  } else if (parsedPrice && parsedPrice > 0) {
     selectedPkg = {
       ...selectedPkg,
       price: parsedPrice,
@@ -520,16 +545,27 @@ function parseOrderText(text) {
 
   const normDelivery = deliveryRaw.toLowerCase() + ' ' + text.toLowerCase();
   const isMoto = normDelivery.includes('ម៉ូតូ') || normDelivery.includes('moto');
-  const isCod = normDelivery.includes('cod') || normDelivery.includes('ប្រមូលប្រាក់');
+  const isCod = normDelivery.includes('cod') ||
+                normDelivery.includes('ប្រមូលប្រាក់') ||
+                normDelivery.includes('ប្រមូលលុយ') ||
+                normDelivery.includes('ស៊ីអូឌី') ||
+                normDelivery.includes('កូដ') ||
+                /\bcod\b/i.test(deliveryRaw) ||
+                /(?:^|[^\d])3\s*(?:\$|ដុល្លារ)/.test(deliveryRaw) ||
+                /\$\s*3(?!\d)/.test(deliveryRaw);
   const isJt = normDelivery.includes('j&t') || normDelivery.includes('jt') || normDelivery.includes('j & t') || normDelivery.includes('j and t') || normDelivery.includes('ជេអេនធី') || normDelivery.includes('ជេអិនធី');
 
   if (isMoto) {
     deliveryMethod = 'moto';
     companyDeliveryType = 'standard';
-    deliveryFee = 2.0;
+    const motoMatch = deliveryRaw.match(/(?:^|[^\d])([23](?:\.5)?)\s*\$|\$\s*([23](?:\.5)?)/);
+    deliveryFee = motoMatch ? parseFloat(motoMatch[1] || motoMatch[2]) : 2.0;
   } else {
     deliveryMethod = 'company';
-    if (isJt) {
+    if (isJt && isCod) {
+      companyDeliveryType = 'jt_cod';
+      deliveryFee = 3.0;
+    } else if (isJt) {
       companyDeliveryType = 'jt';
       deliveryFee = 2.5;
     } else if (isCod) {
@@ -593,7 +629,15 @@ function buildCompleteOrder({
 
   // Cream cost = $3.50/tube, ឫសដូង can cost = $18.00/can
   const productCost = (tubes * 3.5) + (cans * 18.0);
-  const orderProfit = pkg.price - deliveryFee - productCost;
+  // Strict Business Invariant: For 1 tube (set_1), price is STRICTLY  or !
+  let finalPackageId = pkg.id;
+  let finalPrice = pkg.price;
+  if ((tubes === 1 && cans === 0) || finalPackageId === 'set_1') {
+    finalPackageId = 'set_1';
+    finalPrice = (finalPrice === 15 || finalPrice === 60 || finalPrice === 60000) ? 15 : 17;
+  }
+
+  const orderProfit = finalPrice - deliveryFee - productCost;
 
   const timestamp = Date.now();
   const id = `ord_${timestamp}_${Math.random().toString(36).substring(2, 6)}`;
@@ -617,10 +661,10 @@ function buildCompleteOrder({
     orderProfit,
     provinceId,
     destination: cleanDestination || 'N/A',
-    packageId: pkg.id,
+    packageId: finalPackageId,
     tubes,
     cans,
-    price: pkg.price,
+    price: finalPrice,
     deliveryMethod,
     companyDeliveryType,
     deliveryFee,
@@ -640,5 +684,4 @@ module.exports = {
   getKhmerToday,
   normalizeSellerName,
   detectTeamLeader,
-  isSingEuLeader,
 };

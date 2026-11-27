@@ -12,20 +12,11 @@ const {
   query,
   where,
   orderBy,
+  onSnapshot,
 } = require('firebase/firestore');
 const http = require('http');
 const https = require('https');
-const parser = require('./parser');
-const parseOrderText = parser.parseOrderText;
-const buildCompleteOrder = parser.buildCompleteOrder;
-const getKhmerToday = parser.getKhmerToday;
-const isSingEuLeader = (typeof parser.isSingEuLeader === 'function')
-  ? parser.isSingEuLeader
-  : function(name = '') {
-      if (!name) return false;
-      const clean = String(name).replace(/[\p{Extended_Pictographic}\uFE0E\uFE0F\s\u200B\u200C\u200D]+/gu, '').toLowerCase();
-      return clean.includes('ស៊ីង') || clean.includes('សុីង') || clean.includes('ស៊ឹង') || clean.includes('សុឺង') || clean.includes('sing');
-    };
+const { parseOrderText, buildCompleteOrder, getKhmerToday, isSingEuLeader } = require('./parser');
 
 // ----------------------------------------------------
 // Database 1: Order Management (seth-3aa05)
@@ -737,6 +728,39 @@ function startBotInstance({ shopName, token, ordersCol, metadataCol, appTitle })
 
   loadSellersFromDb();
 
+  // Listen to deleted_orders in Database 1 to sync deletions to Telegram
+  try {
+    onSnapshot(collection(dbOrders, 'deleted_orders'), (snapshot) => {
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const data = change.doc.data();
+          const tgChatId = data.telegramChatId;
+          const tgMsgId = data.telegramMessageId;
+          if (tgChatId && tgMsgId) {
+            const deletedByName = data.deletedBy || 'Admin';
+            const ordNum = data.orderNumber || '';
+            const pkgText = data.packageName || data.productType || (data.price ? `$${data.price}` : '');
+            const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n📞 ភ្ញៀវ: ${data.customerPhone || 'N/A'}\n🛍️ ឈុត: ${pkgText} ($${data.price || 0})\n👨‍💼 អ្នកលក់: ${data.sellerName || 'N/A'}\n📅 កាលបរិច្ឆេទ: ${data.date || ''}\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់`;
+
+            bot.editMessageText(deletedNotice, {
+              chat_id: tgChatId,
+              message_id: tgMsgId,
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+                ]
+              }
+            }).catch(() => {});
+          }
+        }
+      });
+    }, (err) => {
+      console.log(`[${shopName}] deleted_orders listener notice:`, err.message);
+    });
+  } catch (e) {
+    console.log(`[${shopName}] Error setting deleted_orders listener:`, e.message);
+  }
+
   async function getNextOrderNumber(isTeamUnitsOnly = false) {
     try {
       if (isTeamUnitsOnly) {
@@ -1443,6 +1467,9 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
 
         completeOrder.sellerName = selectedMember.name;
         completeOrder.teamLeader = selectedMember.groupName || 'Team ស៊ីង អ៊ី';
+        completeOrder.telegramChatId = chatId;
+        completeOrder.telegramMessageId = messageId;
+        completeOrder.telegramBotToken = token;
 
         let syncResultFooter = '';
 
@@ -1477,6 +1504,8 @@ ${summaryItems.slice(0, 35).join('\n')}${summaryItems.length > 35 ? `\n... ន�
 
         const deliveryTypeBadge = completeOrder.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${completeOrder.deliveryFee})`
+          : completeOrder.companyDeliveryType === 'jt_cod'
+          ? `ក្រុមហ៊ុន J&T (COD) ($${completeOrder.deliveryFee})`
           : completeOrder.companyDeliveryType === 'jt'
           ? `ក្រុមហ៊ុន J&T ($${completeOrder.deliveryFee})`
           : completeOrder.companyDeliveryType === 'cod'
@@ -1610,6 +1639,29 @@ ${syncResultFooter}
           }
         }
 
+        if (!orderSnap.exists() && recSnap.empty) {
+          const deletedSnap = await getDoc(doc(dbOrders, 'deleted_orders', orderId)).catch(() => null);
+          const delData = deletedSnap?.exists() ? deletedSnap.data() : null;
+          const deletedByName = delData?.deletedBy || 'Admin';
+          const ordNum = delData?.orderNumber || '';
+          const deletedNotice = `🚫 [បានលុបក្នុង App] ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName}!\n-----------------------------------------\n⚠️ ការកុម្ម៉ង់នេះត្រូវបានលុបចេញពីប្រព័ន្ធ App រួចរាល់!`;
+
+          await bot.editMessageText(deletedNotice, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: `🚫 បានលុបក្នុង App ដោយ ${deletedByName}`, callback_data: 'noop' }]
+              ]
+            }
+          }).catch(() => {});
+
+          return bot.answerCallbackQuery(queryMsg.id, {
+            text: `⚠️ ការកុម្ម៉ង់ (#${ordNum}) ត្រូវបានលុបចេញពីប្រព័ន្ធ App ដោយ ${deletedByName} រួចហើយ!`,
+            show_alert: true,
+          });
+        }
+
         bot.answerCallbackQuery(queryMsg.id, {
           text: newStatus === 'paid' ? '✅ ប្ដូរទៅ: បានទូទាត់' : '✅ ប្ដូរទៅ: មិនទាន់ទូទាត់',
         });
@@ -1620,6 +1672,8 @@ ${syncResultFooter}
 
         const deliveryTypeBadge = updatedOrder?.deliveryMethod === 'moto'
           ? `ម៉ូតូ ($${updatedOrder?.deliveryFee || 2})`
+          : updatedOrder?.companyDeliveryType === 'jt_cod'
+          ? `ក្រុមហ៊ុន J&T (COD) ($${updatedOrder?.deliveryFee || 3})`
           : updatedOrder?.companyDeliveryType === 'jt'
           ? `ក្រុមហ៊ុន J&T ($${updatedOrder?.deliveryFee || 2.5})`
           : updatedOrder?.companyDeliveryType === 'cod'
